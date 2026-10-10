@@ -1,0 +1,17 @@
+name: release
+# A tag v<version> publishes that version to PyPI by trusted publishing: no token is stored anywhere.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: test "v$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
+      - run: uv build
+      - run: uv publish --trusted-publishing always
