@@ -1,5 +1,5 @@
 [project]
-name = "metaphi"
+name = "metaphi-ai"
 version = "0.1.0"
 description = "The Metaphi AI command line: sign in, manage your organization's keys, anonymize traces."
 readme = "README.md"
@@ -19,3 +19,6 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 120
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/metaphi"]

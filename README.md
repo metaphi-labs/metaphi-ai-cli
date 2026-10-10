@@ -5,7 +5,7 @@ The Metaphi AI command line. Sign in, manage your organization's people and keys
 ## Install
 
 ```sh
-uv tool install metaphi        # or: pipx install metaphi
+uv tool install metaphi-ai     # or: pipx install metaphi-ai
 metaphi --version
 ```
 
