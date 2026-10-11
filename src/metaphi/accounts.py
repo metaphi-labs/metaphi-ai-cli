@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from metaphi import config
+from metaphi.errors import MetaphiError
 
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 CLIENT_ID = "metaphi-cli"
@@ -19,8 +20,8 @@ CHECKOUT = "https://checkout.stripe.com/"  # the one place a checkout link may s
 MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the server says
 
 
-class Error(config.Error):
-    """A refusal, in the server's own sentence."""
+class Error(MetaphiError):
+    """A refusal, in the server's own sentence, with no code: accounts' own, or one the CLI makes itself."""
 
 
 def _said(r: httpx.Response) -> str:

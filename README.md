@@ -66,6 +66,47 @@ argument is visible in shell history and to other processes.)
 People, private organizations, accounts and secrets are always replaced, each with one consistent synthetic value of
 the same kind, and the trace keeps its structure. An adversarial pass then reads the output for anything still real.
 
+### Errors
+
+Every error from the service carries a stable `code`. Switch on the code or the exception class, never on the
+message. On a failure the CLI exits 1 and prints:
+
+```
+error: This organization's prepaid balance is used up; add credits to continue. Nothing was started. (code: out_of_credit, request: req_5f1c...)
+```
+
+With `--json`, stdout also gets the error object: `{"error": {"type", "code", "message", "retryable", "request_id"}}`,
+plus `run_id` when a run failed. Quote the `request_id` to support.
+
+From Python, each error `type` raises its own class from `metaphi.errors`. All of them subclass `MetaphiError`:
+
+```python
+from pathlib import Path
+from metaphi.errors import BillingError, MetaphiError, RateLimitError
+from metaphi.twin import twin
+
+try:
+    twin(Path("trace.json"))
+except BillingError:            # out_of_credit
+    ...                         # add credit: `metaphi credits buy`
+except RateLimitError as e:     # rate_limited_concurrent, rate_limited_daily
+    ...                         # e.retryable is True: try again when a run ends
+except MetaphiError as e:
+    print(e.code, e.request_id, e.retryable)
+```
+
+| Class | `type` | Codes, for example |
+| --- | --- | --- |
+| `BillingError` | `billing_error` | `out_of_credit` |
+| `AuthError` | `auth_error` | `no_organization` |
+| `RateLimitError` | `rate_limit_error` | `rate_limited_concurrent`, `rate_limited_daily` |
+| `InvalidRequestError` | `invalid_request_error` | `invalid_key`, `upload_already_run`, `task_not_found` |
+| `RunError` | `run_error` | `twin_unclean`, `not_text`, `too_large`, `session_failed`, `budget_exceeded` |
+| `APIError` | `api_error` | `unavailable`, `balance_unavailable`, `run_unavailable` |
+
+`retryable` says whether making the same call again later may succeed. For a failed run, it means uploading the same
+trace again. An error the CLI says itself, such as a missing key, is a plain `MetaphiError` with `code` set to `None`.
+
 ## Your organization
 
 ```sh

@@ -1,7 +1,8 @@
 """Twin a trace: upload it, run the twinner, download the twin. One file in, one file out, same format.
 
 The twinner is served over MCP (the tools upload_trace, twin_trace, get_task, pull_trace); this is a
-client of those tools, authenticated by an organization key exchanged for an hour-long token."""
+client of those tools, authenticated by an organization key exchanged for an hour-long token. A refusal or a failed
+run raises the typed error the service said (metaphi.errors), its code and request id kept."""
 from __future__ import annotations
 
 import json
@@ -13,17 +14,28 @@ from typing import Any
 import anyio
 import httpx
 
-from metaphi import accounts, config
+from metaphi import accounts, config, errors
 
 DONE = ("completed", "failed", "cancelled")
 
 
+def _error(said: Any) -> errors.MetaphiError | None:
+    """The typed error in what a tool said: {"error": {...}} as data, or as JSON text."""
+    if isinstance(said, str) and said[:1] == "{":
+        try:
+            said = json.loads(said)
+        except ValueError:
+            return None
+    error = said.get("error") if isinstance(said, dict) else None
+    return errors.from_object(error) if isinstance(error, dict) else None
+
+
 def _structured(result: Any) -> Any:
-    """What a tool answered, as data; a tool error raises its own sentence."""
+    """What a tool answered, as data; a tool error raises the typed error it carries, else its own sentence."""
     text = " ".join(getattr(c, "text", "") for c in (getattr(result, "content", None) or [])).strip()
-    if getattr(result, "is_error", False) or getattr(result, "isError", False):
-        raise accounts.Error(text or "the call failed")
     data = getattr(result, "structured_content", None) or getattr(result, "structuredContent", None)
+    if getattr(result, "is_error", False) or getattr(result, "isError", False):
+        raise _error(data) or _error(text) or errors.MetaphiError(text or "the call failed")
     if data is not None:
         return data
     try:
@@ -94,7 +106,10 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
                 break
         output = find(task, "output_path")
         if status != "completed" or not output:
-            raise accounts.Error(f"twinning {status}: {find(task, 'error') or message or status}")
+            error = find(task, "error")
+            if isinstance(error, dict):
+                raise errors.from_object(error)
+            raise errors.RunError(f"twinning {status}: {error or message or status}")
         link = await tool("pull_trace", {"trace_path": output})
         with httpx.Client(timeout=600.0) as h:
             r = h.get(config.check_url(link["url"], "the download link"))

@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from metaphi import __version__, accounts, config
+from metaphi import __version__, accounts, config, errors
 
 SCOPE = "kennet:twin"
 
@@ -236,7 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         a.fn(a)
     except config.Error as e:
-        print(f"metaphi: {e}", file=sys.stderr)
+        # `error: <message> (code: <code>, request: <request id>)`; --json also puts the error object on stdout
+        error = e if isinstance(e, errors.MetaphiError) else errors.MetaphiError(str(e))
+        if getattr(a, "json", False):
+            print(json.dumps({"error": error.to_dict()}, indent=2))
+        print(f"error: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
