@@ -15,6 +15,7 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 CLIENT_ID = "metaphi-cli"
 
 
+CHECKOUT = "https://checkout.stripe.com/"  # the one place a checkout link may send the browser
 MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the server says
 
 
@@ -169,3 +170,45 @@ def token_for(key: str, resource: str) -> str:
     if not isinstance(token, str):
         raise Error("the sign-in server sent no access token")
     return token
+
+
+def org_credits() -> list[dict[str, Any]]:
+    """The prepaid balance of each organization the person may see it for (owners, admins, billing)."""
+    return call("GET", "/credits/orgs")
+
+
+def credit_of(name: str | None) -> dict[str, Any]:
+    """The organization a credits command acts on: the one named, or the only one whose balance the person sees."""
+    mine = org_credits()
+    if name:
+        for o in mine:
+            if o["id"] == name:
+                return o
+        raise Error(f"you see the balance of no organization {name!r}; yours: "
+                    f"{', '.join(o['id'] for o in mine) or 'none'}")
+    if len(mine) == 1:
+        return mine[0]
+    if not mine:
+        raise Error("you are an owner, admin or billing member of no organization")
+    raise Error(f"you see {len(mine)} organizations; name one with --org ({', '.join(o['id'] for o in mine)})")
+
+
+def buy(org_id: str, usd: float, say: Callable[[str], None] = print, open_browser: bool = True,
+        sleep: Callable[[float], None] = time.sleep, wait_s: float = 1800.0) -> dict[str, Any]:
+    """Open a Stripe Checkout for `usd` of the organization's credit, then wait until it is paid."""
+    made = call("POST", f"/credits/orgs/{org_id}/checkout", json={"usd": usd})
+    if not (isinstance(made, dict) and isinstance(made.get("url"), str) and isinstance(made.get("id"), str)):
+        raise Error("the server sent no checkout link")
+    url = made["url"]
+    if not url.startswith(CHECKOUT):
+        raise Error(f"the checkout link is not Stripe's: {url!r}")
+    say(f"Pay in the browser:\n  {url}")
+    if open_browser:
+        webbrowser.open(url)
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        sleep(MIN_INTERVAL)
+        got = call("GET", f"/credits/orgs/{org_id}/checkout/{made['id']}")
+        if got.get("paid"):
+            return got
+    raise Error("the checkout was not paid in time; run `metaphi credits` to see the balance")
