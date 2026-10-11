@@ -1,6 +1,6 @@
 # metaphi
 
-The Metaphi AI command line. Sign in, manage your organization's people and keys, and twin agent traces.
+The Metaphi AI command line. Sign in and twin agent traces.
 
 ## Install
 
@@ -18,30 +18,32 @@ Calling it from Python instead: `pip install metaphi-ai` gives you the same comm
 
 ```sh
 metaphi login                  # opens the browser; confirm the code you see in the terminal
-metaphi keys create prod --save
-metaphi credits                # your organization's prepaid balance
 metaphi twin trace.json        # writes trace.twin.json
 ```
 
-`metaphi login` signs you in as yourself. `metaphi keys create` makes an organization key (`mai_sk_...`). The key is
-shown once, so store it as a secret. `--save` also keeps it on this machine: in the OS keychain when there is one
-(macOS Keychain, Windows Credential Locker, Secret Service on Linux), otherwise in the config file.
+`metaphi login` signs you in as yourself and hands this machine your organization's keys: a live key (`mai_sk_...`)
+and a test key (`mai_sk_test_...`). They are kept in the OS keychain when there is one (macOS Keychain, Windows
+Credential Locker, Secret Service on Linux), otherwise in the config file, and are never printed. Logging in again
+replaces them; `metaphi logout` revokes them. If your organization has no twinning access yet, the sign-in still
+works and says why no key was saved.
 
-`metaphi keys create dev --test` makes a test-mode key (`mai_sk_test_...`). Its runs go through the same pipeline but
-cost nothing; files can be at most 256 KiB and an organization gets 20 runs a day. Test twins and live twins never see
-each other.
+`metaphi twin trace.json --test` runs on the test key. Test runs go through the same pipeline but cost nothing; files
+can be at most 256 KiB and an organization gets 20 runs a day. Test twins and live twins never see each other.
 
-A key you already have is saved with `metaphi login --with-api-key`, which reads it from stdin (or prompts without
-echo), so it never lands in your shell history or the process list.
+Keys, members and billing are managed in the console at <https://app.metaphi.ai/keys>, not from the CLI.
 
 ## Use it from your servers
 
-Every call that does work runs on an organization key, never on a person's sign-in:
+A server or CI job has no browser: make it a key of its own in the console and hand it over as a secret.
 
 ```sh
 export METAPHI_API_KEY=mai_sk_...
 metaphi twin trace.json -o out.json --json
 ```
+
+`METAPHI_API_KEY` overrides whatever is saved. A key you already have can also be saved with
+`metaphi login --with-api-key`, which reads it from stdin (or prompts without echo), so it never lands in your shell
+history or the process list.
 
 One trace file in, one twinned file out, in the same format. `--json` prints `{"output"}` on stdout, with progress
 on stderr. Or from Python:
@@ -63,6 +65,7 @@ One key per environment (`prod`, `staging`) or per customer is a good default. R
 | `-o, --output` | Where the twinned trace goes. Default: `<name>.twin<ext>`. |
 | `--key <64 hex>` | Keys the stand-in values. The same key gives a person the same stand-in in every trace, so a corpus stays consistent. Default: a fresh key per trace. |
 | `--confidential <org>` | Replaces an organization even though it is public, e.g. your customer. Repeatable. |
+| `--test` | Runs on the test key `metaphi login` saved: free, small, apart from live twins. |
 
 The organization key comes from `METAPHI_API_KEY`, then the saved key. (`--api-key` still works but is deprecated: an
 argument is visible in shell history and to other processes.)
@@ -114,16 +117,8 @@ trace again. An error the CLI says itself, such as a missing key, is a plain `Me
 
 ## Your organization
 
-```sh
-metaphi whoami
-metaphi members list
-metaphi members add dev@yourco.com --role admin   # admins manage keys and people; members don't
-metaphi members remove dev@yourco.com
-metaphi keys list
-metaphi keys revoke key_0123abcd
-```
-
-If you manage more than one organization, name it with `--org <id>`.
+`metaphi whoami` shows who you are signed in as and the keys saved on this machine. People, roles and keys are managed
+in the console at <https://app.metaphi.ai/keys>.
 
 ## Credits
 
@@ -133,20 +128,20 @@ reaches zero, new runs are refused until credit is added.
 ```sh
 metaphi credits                       # the balance (owners, admins and billing members)
 metaphi credits buy --amount 200      # pay through Stripe Checkout in the browser; waits until it lands
-metaphi members add ap@yourco.com --role billing   # sees the balance and buys credit, nothing else
 ```
 
-Only owners and billing members can buy.
+Only owners and billing members can buy; a billing member sees the balance and buys credit, nothing else.
 
 ## Configuration
 
 | Variable | Default |
 | --- | --- |
-| `METAPHI_API_KEY` | the key saved by `metaphi login --with-api-key` or `keys create --save` |
+| `METAPHI_API_KEY` | the key saved by `metaphi login` (or `metaphi login --with-api-key`) |
 | `METAPHI_API` | `https://api.metaphi.ai/v1/kennet`, the Kennet API |
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
 | `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `metaphi twin` waits for its twin to end (`--timeout` per call) |
 | `METAPHI_NO_KEYRING` | unset: secrets go to the OS keychain when one is available; `1` keeps them in the config file |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
 
-Sign out with `metaphi logout`. It ends this sign-in everywhere it is used.
+Sign out with `metaphi logout`. It ends this sign-in everywhere it is used, revokes the keys `metaphi login`
+handed out, and clears the saved keys from this machine.

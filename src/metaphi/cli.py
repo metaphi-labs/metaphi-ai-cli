@@ -1,7 +1,6 @@
 """metaphi: the Metaphi AI command line.
 
-    metaphi login                        sign in through the browser
-    metaphi keys create prod             make an organization key (shown once)
+    metaphi login                        sign in through the browser; your organization's keys come with it
     metaphi twin trace.json              twin a trace with that key
 """
 from __future__ import annotations
@@ -13,19 +12,6 @@ import sys
 from pathlib import Path
 
 from metaphi import __version__, accounts, config, errors
-
-SCOPE = "kennet:twin"
-
-
-def _table(rows: list[list[str]]) -> None:
-    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
-    for r in rows:
-        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
-
-
-def _when(t: float | None) -> str:
-    import time
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "-"
 
 
 class _OnArgv(argparse.Action):
@@ -64,9 +50,12 @@ def cmd_login(a: argparse.Namespace) -> None:
         return
     got = accounts.login(open_browser=not a.no_browser)
     print(f"Signed in as {got.get('email')}.")
-    mine = accounts.orgs()
-    if mine:
-        print(f"You manage: {', '.join(o['id'] for o in mine)}. Next: metaphi keys create <name>")
+    if config.load().get("test_api_key"):
+        print(f"Ready for {got.get('org')}: its live key and test key are saved on this machine.")
+        print("Next: metaphi twin <file>   (--test for a free test run)")
+    else:
+        print(f"No key was saved: {got.get('no_api_key') or 'the server sent none'}.")
+    print(f"Keys, members and billing are managed at {config.accounts_url()}/keys")
 
 
 def cmd_logout(a: argparse.Namespace) -> None:
@@ -79,54 +68,10 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     print(f"person: {cfg.get('email') or 'not signed in'}")
     key = config.api_key()
     print(f"key:    {'…' + key[-4:] if key else 'none'}")
+    if cfg.get("test_api_key"):
+        print(f"test:   …{cfg['test_api_key'][-4:]}")
     for o in (accounts.orgs() if cfg.get("token") else []):
         print(f"org:    {o['id']} ({o['role']}) holds {', '.join(o['grants']) or 'nothing yet'}")
-
-
-def cmd_keys_list(a: argparse.Namespace) -> None:
-    o = accounts.org(a.org)
-    rows = [["ID", "NAME", "KEY", "SCOPES", "CREATED", "LAST USED", "STATE"]]
-    for k in o["keys"]:
-        rows.append([k["id"], k["name"], k["hint"], " ".join(k["scopes"]), _when(k["created"]),
-                     _when(k.get("last_used")), "revoked" if k.get("revoked") else "live"])
-    _table(rows)
-
-
-def cmd_keys_create(a: argparse.Namespace) -> None:
-    o = accounts.org(a.org)
-    made = accounts.create_key(o["id"], a.name, a.scope or [SCOPE], test=a.test)
-    mode = "test-mode " if a.test else ""
-    print(f"Created {mode}{made['id']} ({made['name']}) on {o['id']}, holding {' '.join(made['scopes'])}.\n")
-    print(f"  {made['key']}\n")
-    print("This is the only time the key is shown. Store it as a secret, e.g. METAPHI_API_KEY.")
-    if a.save:
-        cfg = config.load()
-        cfg["api_key"] = made["key"]
-        config.save(cfg)
-        print("Also saved on this machine.")
-
-
-def cmd_keys_revoke(a: argparse.Namespace) -> None:
-    o = accounts.org(a.org)
-    accounts.revoke_key(o["id"], a.key_id)
-    print(f"Revoked {a.key_id}.")
-
-
-def cmd_members_list(a: argparse.Namespace) -> None:
-    o = accounts.org(a.org)
-    _table([["EMAIL", "ROLE"], *([e, r] for e, r in sorted(o["members"].items()))])
-
-
-def cmd_members_add(a: argparse.Namespace) -> None:
-    o = accounts.org(a.org)
-    accounts.add_member(o["id"], a.email, a.role)
-    print(f"{a.email} is now {a.role} of {o['id']}. They sign in with `metaphi login`.")
-
-
-def cmd_members_remove(a: argparse.Namespace) -> None:
-    o = accounts.org(a.org)
-    accounts.remove_member(o["id"], a.email)
-    print(f"{a.email} removed from {o['id']}.")
 
 
 def _seconds(said: str) -> float:
@@ -143,7 +88,7 @@ def cmd_twin(a: argparse.Namespace) -> None:
     from metaphi.twin import twin
     say = (lambda s: print(s, file=sys.stderr)) if a.json else print
     got = twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
-               a.confidential, say=say, deadline_s=a.timeout)
+               a.confidential, say=say, deadline_s=a.timeout, test=a.test)
     if a.json:
         print(json.dumps({"output": got["output"]}, indent=2))
 
@@ -180,48 +125,16 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--debug-keyring", nargs=0, action=_DebugKeyring, help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
 
-    s = sub.add_parser("login", help="sign in through the browser (or save a key with --with-api-key)")
+    s = sub.add_parser("login", help="sign in through the browser and save your organization's keys (or save a key "
+                       "you have with --with-api-key)")
     s.add_argument("--with-api-key", action="store_true",
                    help="save an organization key on this machine instead of signing in; reads it from stdin")
     s.add_argument("--api-key", action=_OnArgv, help=argparse.SUPPRESS)
     s.add_argument("--no-browser", action="store_true", help="print the link instead of opening it")
     s.set_defaults(fn=cmd_login)
-    sub.add_parser("logout", help="sign out everywhere this sign-in is used").set_defaults(fn=cmd_logout)
+    sub.add_parser("logout", help="sign out everywhere this sign-in is used, and revoke its keys").set_defaults(
+        fn=cmd_logout)
     sub.add_parser("whoami", help="who you are signed in as, and your organizations").set_defaults(fn=cmd_whoami)
-
-    keys = sub.add_parser("keys", help="your organization's keys").add_subparsers(dest="verb", required=True,
-                                                                                    metavar="<verb>")
-    s = keys.add_parser("list", help="every key, live and revoked")
-    s.add_argument("--org")
-    s.set_defaults(fn=cmd_keys_list)
-    s = keys.add_parser("create", help="make a key; it is shown once")
-    s.add_argument("name", help="what the key is for, e.g. prod or staging")
-    s.add_argument("--scope", action="append", help=f"a scope the key holds (default {SCOPE}); repeatable")
-    s.add_argument("--save", action="store_true", help="also keep it on this machine for `metaphi twin`")
-    s.add_argument("--test", action="store_true",
-                   help="a test-mode key (mai_sk_test_...): runs are free, small and kept apart from live ones")
-    s.add_argument("--org")
-    s.set_defaults(fn=cmd_keys_create)
-    s = keys.add_parser("revoke", help="stop a key working")
-    s.add_argument("key_id")
-    s.add_argument("--org")
-    s.set_defaults(fn=cmd_keys_revoke)
-
-    members = sub.add_parser("members", help="your organization's people").add_subparsers(
-        dest="verb", required=True, metavar="<verb>")
-    s = members.add_parser("list")
-    s.add_argument("--org")
-    s.set_defaults(fn=cmd_members_list)
-    s = members.add_parser("add", help="add a person, or change their role")
-    s.add_argument("email")
-    s.add_argument("--role", default="member", choices=("member", "billing", "admin", "owner"),
-                   help="billing: sees the balance and buys credit, nothing else")
-    s.add_argument("--org")
-    s.set_defaults(fn=cmd_members_add)
-    s = members.add_parser("remove")
-    s.add_argument("email")
-    s.add_argument("--org")
-    s.set_defaults(fn=cmd_members_remove)
 
     s = sub.add_parser("credits", help="your organization's prepaid balance")
     s.add_argument("--org")
@@ -238,6 +151,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext>)")
     s.add_argument("--key", help="64 hex characters: the same key gives a person the same stand-in in every trace")
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
+    s.add_argument("--test", action="store_true",
+                   help="run on the test key `metaphi login` saved: free, small, kept apart from live twins")
     s.add_argument("--api-key", action=_OnArgv, help="deprecated: set METAPHI_API_KEY instead")
     s.add_argument("--json", action="store_true", help="print the result as JSON on stdout")
     s.add_argument("--timeout", type=_seconds, help="seconds to wait for the twin (default METAPHI_TWIN_TIMEOUT, or "

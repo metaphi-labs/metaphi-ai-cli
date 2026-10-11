@@ -1,5 +1,5 @@
-"""Your Metaphi AI account: sign in from the terminal (RFC 8628, as `stripe login` does), the organizations you
-manage, their people and their keys, and an organization key exchanged for a short-lived token on one product."""
+"""Your Metaphi AI account: sign in from the terminal (RFC 8628, as `stripe login` does) and be handed your
+organization's keys, the organizations you manage, and their prepaid credit."""
 from __future__ import annotations
 
 import time
@@ -52,7 +52,8 @@ def _http() -> httpx.Client:
 
 def login(say: Callable[[str], None] = print, open_browser: bool = True,
           sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
-    """Sign the person in: show a code, open the browser on it, wait for the approval, keep the token."""
+    """Sign the person in: show a code, open the browser on it, wait for the approval, keep the token and the
+    organization's keys that come with it (`api_key`, `test_api_key`; `no_api_key` says why none came)."""
     with _http() as h:
         r = h.post("/device/code", data={"client_id": CLIENT_ID})
         if r.status_code != 200:
@@ -82,6 +83,9 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
                     raise Error("the sign-in server sent no access token")
                 cfg = config.load()
                 cfg.update({"token": body["access_token"], "email": body.get("email")})
+                cfg.pop("test_api_key", None)  # the server revoked the last login's keys
+                if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
+                    cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
                 config.save(cfg)
                 return body
             error = body.get("error")
@@ -98,7 +102,8 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
 def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
-    cfg.pop("email", None)
+    for name in ("email", "api_key", "test_api_key"):
+        cfg.pop(name, None)
     config.save(cfg)
     if token:
         with _http() as h:
@@ -125,41 +130,6 @@ def call(method: str, path: str, **kw: Any) -> Any:
 
 def orgs() -> list[dict[str, Any]]:
     return call("GET", "/keys/orgs")
-
-
-def org(name: str | None) -> dict[str, Any]:
-    """The organization a command acts on: the one named, or the only one the person manages."""
-    mine = orgs()
-    if name:
-        for o in mine:
-            if o["id"] == name:
-                return o
-        raise Error(f"you manage no organization {name!r}; yours: {', '.join(o['id'] for o in mine) or 'none'}")
-    if len(mine) == 1:
-        return mine[0]
-    if not mine:
-        raise Error("you are an owner or admin of no organization; ask your organization's owner to make you one")
-    raise Error(f"you manage {len(mine)} organizations; name one with --org ({', '.join(o['id'] for o in mine)})")
-
-
-def create_key(org_id: str, name: str, scopes: list[str], test: bool = False) -> dict[str, Any]:
-    """A new key; `test` makes a test-mode key (mai_sk_test_...): free, small runs, apart from live ones."""
-    body: dict[str, Any] = {"name": name, "scopes": scopes}
-    if test:
-        body["test"] = True
-    return call("POST", f"/keys/orgs/{org_id}", json=body)
-
-
-def revoke_key(org_id: str, key_id: str) -> dict[str, Any]:
-    return call("DELETE", f"/keys/orgs/{org_id}/{key_id}")
-
-
-def add_member(org_id: str, email: str, role: str) -> dict[str, Any]:
-    return call("PUT", f"/keys/orgs/{org_id}/members/{email}", json={"role": role})
-
-
-def remove_member(org_id: str, email: str) -> dict[str, Any]:
-    return call("DELETE", f"/keys/orgs/{org_id}/members/{email}")
 
 
 def org_credits() -> list[dict[str, Any]]:

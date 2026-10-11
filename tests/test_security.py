@@ -55,7 +55,7 @@ def test_custom_host_needs_the_opt_in_and_still_needs_https(monkeypatch, capsys)
 def test_a_bad_endpoint_is_an_error_not_a_traceback(monkeypatch, capsys):
     monkeypatch.setenv("METAPHI_ACCOUNTS", "http://app.metaphi.ai")
     config.save({"token": "tok"})
-    assert cli.main(["keys", "list"]) == 1
+    assert cli.main(["credits"]) == 1
     assert "must be https" in capsys.readouterr().err
 
 
@@ -198,10 +198,12 @@ class FakeKeyring:
 def test_secrets_go_to_the_keychain_and_the_file_keeps_the_rest(home, monkeypatch):
     kr = FakeKeyring()
     monkeypatch.setattr(config, "_keyring", lambda: kr)
-    config.save({"token": "tok", "api_key": "mai_sk_k", "email": "alice@example.test"})
+    config.save({"token": "tok", "api_key": "mai_sk_k", "test_api_key": "mai_sk_test_k", "email": "alice@example.test"})
     assert json.loads(config.path().read_text()) == {"email": "alice@example.test"}
-    assert kr.store == {("metaphi-ai", "token"): "tok", ("metaphi-ai", "api_key"): "mai_sk_k"}
-    assert config.load() == {"email": "alice@example.test", "token": "tok", "api_key": "mai_sk_k"}
+    assert kr.store == {("metaphi-ai", "token"): "tok", ("metaphi-ai", "api_key"): "mai_sk_k",
+                        ("metaphi-ai", "test_api_key"): "mai_sk_test_k"}
+    assert config.load() == {"email": "alice@example.test", "token": "tok", "api_key": "mai_sk_k",
+                             "test_api_key": "mai_sk_test_k"}
     cfg = config.load()
     cfg.pop("token")
     config.save(cfg)

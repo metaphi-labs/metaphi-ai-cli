@@ -1,4 +1,4 @@
-"""The CLI against stand-ins for accounts and the twin API: sign-in, keys, and one trace end to end."""
+"""The CLI against stand-ins for accounts and the twin API: sign-in, the keys it hands over, and one trace end to end."""
 import json
 
 import httpx
@@ -38,28 +38,62 @@ def test_login_polls_the_device_grant_until_approved_and_keeps_the_token(home):
     assert config.load()["token"] == "tok" and oct(config.path().stat().st_mode)[-3:] == "600"
 
 
+CODE = {"device_code": "dc", "user_code": "ABCD-EFGH", "interval": 0, "expires_in": 60,
+        "verification_uri": f"{A}/device"}
+SIGNED = {"access_token": "tok", "token_type": "Bearer", "email": "alice@example.test"}
+
+
+def _login(monkeypatch, **handed) -> int:
+    respx.post(f"{A}/device/code").respond(json=CODE)
+    respx.post(f"{A}/oauth/token").respond(json={**SIGNED, **handed})
+    monkeypatch.setattr(accounts.time, "sleep", lambda s: None)
+    return cli.main(["login", "--no-browser"])
+
+
 @respx.mock
-def test_keys_create_shows_the_key_once_on_the_only_org(capsys):
-    config.save({"token": "tok"})
-    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["kennet:twin"],
-                                               "members": {}, "keys": []}])
-    made = respx.post(f"{A}/keys/orgs/acme").respond(json={"id": "key_1", "name": "prod", "key": "mai_sk_x",
-                                                           "scopes": ["kennet:twin"]})
-    assert cli.main(["keys", "create", "prod"]) == 0
-    assert json.loads(made.calls[0].request.content) == {"name": "prod", "scopes": ["kennet:twin"]}
-    assert made.calls[0].request.headers["authorization"] == "Bearer tok"
-    assert "mai_sk_x" in capsys.readouterr().out and "api_key" not in config.load()
+def test_login_saves_the_live_key_and_the_test_key_it_is_handed(monkeypatch, capsys):
+    assert _login(monkeypatch, org="acme", api_key="mai_sk_live", test_api_key="mai_sk_test_t") == 0
+    cfg = config.load()
+    assert (cfg["token"], cfg["api_key"], cfg["test_api_key"]) == ("tok", "mai_sk_live", "mai_sk_test_t")
+    out = capsys.readouterr().out
+    assert "Ready for acme" in out and "Next: metaphi twin <file>" in out
+    assert out.splitlines()[-1] == f"Keys, members and billing are managed at {A}/keys"
+    assert "mai_sk_" not in out
+
+
+@respx.mock
+def test_login_with_no_key_handed_over_says_why_and_still_signs_in(monkeypatch, capsys):
+    config.save({"api_key": "mai_sk_mine", "test_api_key": "mai_sk_test_old"})
+    assert _login(monkeypatch, no_api_key="Acme has no synthetic twinning access yet; ask Metaphi AI for it") == 0
+    out = capsys.readouterr().out
+    assert "No key was saved: Acme has no synthetic twinning access yet" in out and "Ready for" not in out
+    assert out.splitlines()[-1] == f"Keys, members and billing are managed at {A}/keys"
+    cfg = config.load()   # signed in; a key saved by hand stays, the last login's test key is gone
+    assert cfg["token"] == "tok" and cfg["api_key"] == "mai_sk_mine" and "test_api_key" not in cfg
+
+
+@respx.mock
+def test_logout_clears_the_token_and_both_keys():
+    config.save({"token": "tok", "email": "alice@example.test", "api_key": "mai_sk_live",
+                 "test_api_key": "mai_sk_test_t"})
+    out = respx.post(f"{A}/logout").respond(json={"revoked": 1})
+    assert cli.main(["logout"]) == 0
+    assert out.calls[0].request.headers["authorization"] == "Bearer tok" and config.load() == {}
+
+
+@pytest.mark.parametrize("command", ["keys", "members"])
+def test_keys_and_members_are_not_commands(command, capsys):
+    with pytest.raises(SystemExit):
+        cli.main([command, "list"])
+    assert "invalid choice" in capsys.readouterr().err
 
 
 @respx.mock
 def test_a_refusal_is_the_servers_sentence(capsys):
     config.save({"token": "tok"})
-    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "admin", "grants": [], "members": {}, "keys": []}])
-    respx.put(f"{A}/keys/orgs/acme/members/x@lab.test").respond(
-        409, json={"detail": "x@lab.test belongs to another organization"})
-    assert cli.main(["members", "add", "x@lab.test"]) == 1
-    assert "belongs to another organization" in capsys.readouterr().err
-    assert cli.main(["keys", "list", "--org", "other"]) == 1
+    respx.get(f"{A}/credits/orgs").respond(403, json={"detail": "alice@example.test is closed; ask Metaphi AI"})
+    assert cli.main(["credits"]) == 1
+    assert "is closed" in capsys.readouterr().err
 
 
 API = config.DEFAULT_API
@@ -198,22 +232,28 @@ def test_an_uncoded_answer_is_a_plain_error(home, monkeypatch):
     assert type(got) is errors.MetaphiError and got.code == "later" and got.type == "new_error"
 
 
-@respx.mock
-def test_keys_create_test_makes_a_test_mode_key(capsys):
-    config.save({"token": "tok"})
-    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["kennet:twin"],
-                                               "members": {}, "keys": []}])
-    made = respx.post(f"{A}/keys/orgs/acme").respond(json={"id": "key_2", "name": "dev", "key": "mai_sk_test_x",
-                                                           "scopes": ["kennet:twin"]})
-    assert cli.main(["keys", "create", "dev", "--test"]) == 0
-    assert json.loads(made.calls[0].request.content) == {"name": "dev", "scopes": ["kennet:twin"], "test": True}
-    assert "test-mode key_2" in capsys.readouterr().out
-
-
 def test_twin_without_a_key_says_how_to_get_one(home, capsys):
     (home / "t.json").write_text("{}")
     assert cli.main(["twin", str(home / "t.json")]) == 1
-    assert "METAPHI_API_KEY" in capsys.readouterr().err
+    assert "no key: run `metaphi login`, or set METAPHI_API_KEY" in capsys.readouterr().err
+    config.save({"api_key": "mai_sk_live"})   # a live key alone never stands in for the test key
+    assert cli.main(["twin", str(home / "t.json"), "--test"]) == 1
+    assert "no test key: run `metaphi login`" in capsys.readouterr().err
+
+
+@respx.mock
+def test_twin_test_runs_on_the_saved_test_key_and_the_environment_overrides_both(home, monkeypatch):
+    (home / "trace.json").write_text('{"user": "Alice"}')
+    monkeypatch.setattr(twin.time, "sleep", lambda s: None)
+    config.save({"api_key": "mai_sk_live", "test_api_key": "mai_sk_test_t"})
+    used = []
+    for argv, env in ((["--test"], None), ([], None), (["--test"], "mai_sk_env")):
+        if env:
+            monkeypatch.setenv("METAPHI_API_KEY", env)
+        made, _polls, _got = _api()
+        assert cli.main(["twin", str(home / "trace.json"), *argv]) == 0
+        used.append(made.calls[-1].request.headers["authorization"])
+    assert used == ["Bearer mai_sk_test_t", "Bearer mai_sk_live", "Bearer mai_sk_env"]
 
 
 ORG = {"id": "acme", "name": "Acme", "role": "billing", "can_buy": True, "credits_usd": 12.5}
@@ -261,15 +301,6 @@ def test_only_owners_and_billing_buy_and_only_through_stripe(monkeypatch, capsys
     assert "not Stripe's" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["credits", "buy", "--amount", "0"])
-
-
-@respx.mock
-def test_a_billing_member_is_added_by_role():
-    config.save({"token": "tok"})
-    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": [], "members": {}, "keys": []}])
-    put = respx.put(f"{A}/keys/orgs/acme/members/pay@acme.test").respond(json={})
-    assert cli.main(["members", "add", "pay@acme.test", "--role", "billing"]) == 0
-    assert json.loads(put.calls[0].request.content) == {"role": "billing"}
 
 
 @respx.mock
