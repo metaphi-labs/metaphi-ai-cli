@@ -5,7 +5,7 @@ description = "The Metaphi AI command line: sign in, manage your organization's 
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-dependencies = ["httpx>=0.28", "mcp>=2.3", "keyring>=25.7"]
+dependencies = ["httpx>=0.28", "keyring>=25.7"]
 
 [project.scripts]
 metaphi = "metaphi.cli:main"

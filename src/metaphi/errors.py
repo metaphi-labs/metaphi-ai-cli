@@ -59,6 +59,11 @@ class InvalidRequestError(MetaphiError):
     type = "invalid_request_error"
 
 
+class IdempotencyError(MetaphiError):
+    """An Idempotency-Key reused with a different request, or still in flight (`retryable`)."""
+    type = "idempotency_error"
+
+
 class RunError(MetaphiError):
     """The run started and failed; nothing was written or charged."""
     type = "run_error"
@@ -70,7 +75,8 @@ class APIError(MetaphiError):
 
 
 BY_TYPE: dict[str, type[MetaphiError]] = {c.type: c for c in (BillingError, AuthError, RateLimitError,
-                                                                 InvalidRequestError, RunError, APIError)}
+                                                                 InvalidRequestError, IdempotencyError, RunError,
+                                                                 APIError)}
 
 
 def from_object(error: dict[str, Any]) -> MetaphiError:

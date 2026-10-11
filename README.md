@@ -27,6 +27,10 @@ metaphi twin trace.json        # writes trace.twin.json
 shown once, so store it as a secret. `--save` also keeps it on this machine: in the OS keychain when there is one
 (macOS Keychain, Windows Credential Locker, Secret Service on Linux), otherwise in the config file.
 
+`metaphi keys create dev --test` makes a test-mode key (`mai_sk_test_...`). Its runs go through the same pipeline but
+cost nothing; files can be at most 256 KiB and an organization gets 20 runs a day. Test twins and live twins never see
+each other.
+
 A key you already have is saved with `metaphi login --with-api-key`, which reads it from stdin (or prompts without
 echo), so it never lands in your shell history or the process list.
 
@@ -102,6 +106,7 @@ except MetaphiError as e:
 | `RateLimitError` | `rate_limit_error` | `rate_limited_concurrent`, `rate_limited_daily` |
 | `InvalidRequestError` | `invalid_request_error` | `invalid_key`, `upload_already_run`, `task_not_found` |
 | `RunError` | `run_error` | `twin_unclean`, `not_text`, `too_large`, `session_failed`, `budget_exceeded` |
+| `IdempotencyError` | `idempotency_error` | `idempotency_key_reused`, `idempotency_key_in_use` |
 | `APIError` | `api_error` | `unavailable`, `balance_unavailable`, `run_unavailable` |
 
 `retryable` says whether making the same call again later may succeed. For a failed run, it means uploading the same
@@ -138,7 +143,9 @@ Only owners and billing members can buy.
 | Variable | Default |
 | --- | --- |
 | `METAPHI_API_KEY` | the key saved by `metaphi login --with-api-key` or `keys create --save` |
+| `METAPHI_API` | `https://api.metaphi.ai/v1/kennet`, the Kennet API |
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
+| `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `metaphi twin` waits for its twin to end (`--timeout` per call) |
 | `METAPHI_NO_KEYRING` | unset: secrets go to the OS keychain when one is available; `1` keeps them in the config file |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
 

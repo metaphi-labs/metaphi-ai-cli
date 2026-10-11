@@ -94,8 +94,9 @@ def cmd_keys_list(a: argparse.Namespace) -> None:
 
 def cmd_keys_create(a: argparse.Namespace) -> None:
     o = accounts.org(a.org)
-    made = accounts.create_key(o["id"], a.name, a.scope or [SCOPE])
-    print(f"Created {made['id']} ({made['name']}) on {o['id']}, holding {' '.join(made['scopes'])}.\n")
+    made = accounts.create_key(o["id"], a.name, a.scope or [SCOPE], test=a.test)
+    mode = "test-mode " if a.test else ""
+    print(f"Created {mode}{made['id']} ({made['name']}) on {o['id']}, holding {' '.join(made['scopes'])}.\n")
     print(f"  {made['key']}\n")
     print("This is the only time the key is shown. Store it as a secret, e.g. METAPHI_API_KEY.")
     if a.save:
@@ -128,11 +129,21 @@ def cmd_members_remove(a: argparse.Namespace) -> None:
     print(f"{a.email} removed from {o['id']}.")
 
 
+def _seconds(said: str) -> float:
+    try:
+        got = float(said)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{said!r} is not a number of seconds") from None
+    if got <= 0:
+        raise argparse.ArgumentTypeError("a number of seconds above zero")
+    return got
+
+
 def cmd_twin(a: argparse.Namespace) -> None:
     from metaphi.twin import twin
     say = (lambda s: print(s, file=sys.stderr)) if a.json else print
     got = twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
-                    a.confidential, say=say)
+               a.confidential, say=say, deadline_s=a.timeout)
     if a.json:
         print(json.dumps({"output": got["output"]}, indent=2))
 
@@ -187,6 +198,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("name", help="what the key is for, e.g. prod or staging")
     s.add_argument("--scope", action="append", help=f"a scope the key holds (default {SCOPE}); repeatable")
     s.add_argument("--save", action="store_true", help="also keep it on this machine for `metaphi twin`")
+    s.add_argument("--test", action="store_true",
+                   help="a test-mode key (mai_sk_test_...): runs are free, small and kept apart from live ones")
     s.add_argument("--org")
     s.set_defaults(fn=cmd_keys_create)
     s = keys.add_parser("revoke", help="stop a key working")
@@ -227,6 +240,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
     s.add_argument("--api-key", action=_OnArgv, help="deprecated: set METAPHI_API_KEY instead")
     s.add_argument("--json", action="store_true", help="print the result as JSON on stdout")
+    s.add_argument("--timeout", type=_seconds, help="seconds to wait for the twin (default METAPHI_TWIN_TIMEOUT, or "
+                   "7200)")
     s.set_defaults(fn=cmd_twin)
     return p
 

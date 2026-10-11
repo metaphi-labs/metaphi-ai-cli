@@ -73,7 +73,6 @@ jobs:
           extra=()
           if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
           uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name metaphi \
-            --collect-submodules mcp.client --collect-submodules mcp.shared --collect-submodules mcp_types \
             --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
             src/metaphi/__main__.py
       - run: ./dist/metaphi --version
