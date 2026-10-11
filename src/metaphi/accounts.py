@@ -142,8 +142,12 @@ def org(name: str | None) -> dict[str, Any]:
     raise Error(f"you manage {len(mine)} organizations; name one with --org ({', '.join(o['id'] for o in mine)})")
 
 
-def create_key(org_id: str, name: str, scopes: list[str]) -> dict[str, Any]:
-    return call("POST", f"/keys/orgs/{org_id}", json={"name": name, "scopes": scopes})
+def create_key(org_id: str, name: str, scopes: list[str], test: bool = False) -> dict[str, Any]:
+    """A new key; `test` makes a test-mode key (mai_sk_test_...): free, small runs, apart from live ones."""
+    body: dict[str, Any] = {"name": name, "scopes": scopes}
+    if test:
+        body["test"] = True
+    return call("POST", f"/keys/orgs/{org_id}", json=body)
 
 
 def revoke_key(org_id: str, key_id: str) -> dict[str, Any]:
@@ -156,21 +160,6 @@ def add_member(org_id: str, email: str, role: str) -> dict[str, Any]:
 
 def remove_member(org_id: str, email: str) -> dict[str, Any]:
     return call("DELETE", f"/keys/orgs/{org_id}/members/{email}")
-
-
-def token_for(key: str, resource: str) -> str:
-    """An organization key exchanged for an hour-long token on one product (RFC 6749 §4.4)."""
-    if not key.startswith(config.KEY_PREFIX):
-        raise Error(f"that is not an organization key ({config.KEY_PREFIX}...)")
-    with _http() as h:
-        r = h.post("/oauth/token", data={"grant_type": "client_credentials", "client_secret": key,
-                                          "resource": resource})
-    if r.status_code != 200:
-        raise Error(_said(r))
-    token = _json(r).get("access_token")
-    if not isinstance(token, str):
-        raise Error("the sign-in server sent no access token")
-    return token
 
 
 def org_credits() -> list[dict[str, Any]]:

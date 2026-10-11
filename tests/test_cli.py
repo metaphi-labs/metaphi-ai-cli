@@ -1,11 +1,9 @@
-"""The CLI against stand-ins for accounts and the twinner: sign-in, keys, and one trace end to end."""
+"""The CLI against stand-ins for accounts and the twin API: sign-in, keys, and one trace end to end."""
 import json
-from typing import Any
 
 import httpx
 import pytest
 import respx
-from mcp.server.mcpserver import MCPServer
 
 from metaphi import accounts, cli, config, errors, twin
 
@@ -16,7 +14,7 @@ A = config.DEFAULT_ACCOUNTS
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("METAPHI_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("METAPHI_NO_KEYRING", "1")
-    for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_KENNET", "METAPHI_ALLOW_CUSTOM_HOST"):
+    for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_API", "METAPHI_ALLOW_CUSTOM_HOST"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
 
@@ -64,69 +62,74 @@ def test_a_refusal_is_the_servers_sentence(capsys):
     assert cli.main(["keys", "list", "--org", "other"]) == 1
 
 
-def _twinner(seen):
-    m = MCPServer("stand-in")
+API = config.DEFAULT_API
+TWIN = {"id": "twin_t1", "object": "twin", "status": "queued", "created": 1, "completed": None,
+        "filename": "trace.json", "error": None, "livemode": True}
 
-    @m.tool()
-    def upload_trace(filename: str) -> dict:
-        seen["filename"] = filename
-        return {"url": "https://files.metaphi.ai/up", "upload_id": "u" * 24, "expires_at": 0, "command": ""}
 
-    @m.tool()
-    def twin_trace(upload_id: str, key: str = "", confidential: list[str] | None = None) -> Any:
-        seen["args"] = {"upload_id": upload_id, "key": key, "confidential": confidential}
-        if "refusal" in seen:
-            return seen["refusal"]
-        return {"task_id": "t1", "status": "working", "poll_interval_ms": 1}
+def _api(statuses=("running", "completed"), error=None, content=b'{"user": "Morgan"}', created=None):
+    """The twin API stand-in: the create answer, then one GET per status, then the content."""
+    made = respx.post(f"{API}/twins").mock(return_value=created or httpx.Response(202, json=TWIN))
+    polls = respx.get(f"{API}/twins/twin_t1").mock(side_effect=[
+        httpx.Response(200, json={**TWIN, "status": s, "error": error if s == "failed" else None}) for s in statuses])
+    got = respx.get(f"{API}/twins/twin_t1/content").respond(content=content,
+                                                           headers={"content-type": "application/json"})
+    return made, polls, got
 
-    @m.tool()
-    def get_task(task_id: str) -> dict:
-        seen["polls"] = seen.get("polls", 0) + 1
-        if seen["polls"] < 2:
-            return {"taskId": task_id, "status": "working", "statusMessage": "reading"}
-        outcome = seen.get("outcome", {"run_id": "r", "status": "completed", "output_path": "k/u/r/trace.json"})
-        return {"taskId": task_id, "status": "completed",
-                "result": {"structuredContent": {"calls": [{"outcome": outcome}]}}}
 
-    @m.tool()
-    def pull_trace(trace_path: str) -> dict:
-        return {"url": f"https://files.metaphi.ai/{trace_path}", "expires_at": 0, "command": ""}
-
-    return m
+def _run(home, monkeypatch, *argv) -> int:
+    (home / "trace.json").write_text('{"user": "Alice"}')
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    monkeypatch.setattr(twin.time, "sleep", lambda s: None)
+    return cli.main(["twin", str(home / "trace.json"), *argv])
 
 
 @respx.mock
-def test_twin_uploads_runs_and_downloads(home, monkeypatch, capsys):
-    from mcp import Client
-    trace = home / "trace.json"
-    trace.write_text('{"user": "Alice"}')
-    seen = {}
-    token = respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
-    put = respx.put("https://files.metaphi.ai/up").respond(200)
-    respx.get("https://files.metaphi.ai/k/u/r/trace.json").respond(content=b'{"user": "Morgan"}')
-    monkeypatch.setattr(twin, "connect", lambda tok: seen.update(token=tok) or Client(_twinner(seen)))
-    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
-    assert cli.main(["twin", str(trace), "--confidential", "Acme", "--json"]) == 0
-    form = token.calls[0].request.content.decode()
-    assert "client_credentials" in form and "mai_sk_live" in form and seen["token"] == "jwt"
-    assert put.calls[0].request.content == b'{"user": "Alice"}' and seen["filename"] == "trace.json"
-    assert seen["args"] == {"upload_id": "u" * 24, "key": "", "confidential": ["Acme"]}
+def test_twin_uploads_polls_and_downloads(home, monkeypatch, capsys):
+    made, polls, got = _api()
+    assert _run(home, monkeypatch, "--confidential", "Acme", "--confidential", "Initech", "--key", "ab" * 32,
+                "--json") == 0
+    request = made.calls[0].request
+    assert request.headers["authorization"] == "Bearer mai_sk_live"
+    assert len(request.headers["idempotency-key"]) == 32
+    body = request.content
+    assert b'filename="trace.json"' in body and b'{"user": "Alice"}' in body
+    assert body.count(b'name="confidential"') == 2 and b"Initech" in body and b"ab" * 32 in body
+    assert polls.call_count == 2 and got.called
     assert (home / "trace.twin.json").read_text() == '{"user": "Morgan"}'
     assert sorted(p.name for p in home.iterdir() if p.is_file()) == ["trace.json", "trace.twin.json"]
     assert json.loads(capsys.readouterr().out) == {"output": str(home / "trace.twin.json")}
 
 
-def test_a_failed_run_says_why_and_writes_nothing(home, monkeypatch, capsys):
-    from mcp import Client
+@respx.mock
+def test_the_python_api_answers_the_output_and_the_twin(home, monkeypatch):
+    _api(statuses=("completed",))
     (home / "trace.json").write_text("{}")
-    seen = {"outcome": {"run_id": "r", "status": "failed", "error": "the twin still held an original value"}}
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    got = twin.twin(home / "trace.json", home / "out.json", say=lambda s: None, sleep=lambda s: None)
+    assert got == {"output": str(home / "out.json"), "id": "twin_t1"}
+
+
+@respx.mock
+def test_polling_backs_off(home, monkeypatch):
+    _api(statuses=("queued", "running", "running", "running", "completed"))
+    (home / "trace.json").write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    slept = []
+    twin.twin(home / "trace.json", say=lambda s: None, sleep=slept.append)
+    assert slept == [1.0, 1.5, 2.25, 3.375, 5.0625]
+
+
+def test_a_failed_run_raises_its_code_and_writes_nothing(home, monkeypatch, capsys):
+    failed = {"type": "run_error", "code": "twin_unclean", "retryable": False,
+              "message": "the twin did not come out clean; nothing was written or charged"}
     with respx.mock:
-        respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
-        respx.put("https://files.metaphi.ai/up").respond(200)
-        monkeypatch.setattr(twin, "connect", lambda tok: Client(_twinner(seen)))
-        monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
-        assert cli.main(["twin", str(home / "trace.json")]) == 1
-    assert "the twin still held an original value" in capsys.readouterr().err
+        _, _, got = _api(statuses=("failed",), error=failed)
+        assert _run(home, monkeypatch, "--json") == 1
+        assert not got.called
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"error": failed}
+    assert "(code: twin_unclean)" in out.err
     assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
 
 
@@ -134,36 +137,17 @@ OUT_OF_CREDIT = {"type": "billing_error", "code": "out_of_credit", "retryable": 
                  "message": "This organization's prepaid balance is used up; add credits to continue."}
 
 
-def _refused(error: dict) -> Any:
-    from mcp.types import CallToolResult, TextContent
-    return CallToolResult(content=[TextContent(type="text", text=error["message"])],
-                          structured_content={"error": error}, is_error=True)
-
-
-def _twin(home, monkeypatch, seen, *argv, run=None) -> Any:
-    """`metaphi twin` against the stand-in, or `run()` in its place."""
-    from mcp import Client
-    (home / "trace.json").write_text("{}")
-    with respx.mock:
-        respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
-        respx.put("https://files.metaphi.ai/up").respond(200)
-        monkeypatch.setattr(twin, "connect", lambda tok: Client(_twinner(seen)))
-        monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
-        return run() if run else cli.main(["twin", str(home / "trace.json"), *argv])
-
-
 def test_a_refusal_raises_its_type_and_keeps_its_code(home, monkeypatch, capsys):
-    seen = {"refusal": _refused(OUT_OF_CREDIT)}
-    assert _twin(home, monkeypatch, seen) == 1
+    with respx.mock:
+        _api(created=httpx.Response(402, json={"error": OUT_OF_CREDIT}, headers={"request-id": "req_1"}))
+        assert _run(home, monkeypatch) == 1
     err = capsys.readouterr().err
     assert err.endswith(f"error: {OUT_OF_CREDIT['message']} (code: out_of_credit, request: req_1)\n")
-
-    def run():
+    with respx.mock:
+        _api(created=httpx.Response(402, json={"error": OUT_OF_CREDIT}))
         with pytest.raises(errors.BillingError) as e:
-            twin.twin(home / "trace.json", say=lambda s: None)
-        return e.value
-
-    got = _twin(home, monkeypatch, seen, run=run)
+            twin.twin(home / "trace.json", say=lambda s: None, sleep=lambda s: None)
+    got = e.value
     assert (got.code, got.request_id, got.retryable) == ("out_of_credit", "req_1", False)
     assert isinstance(got, errors.MetaphiError) and isinstance(got, config.Error)
 
@@ -171,31 +155,57 @@ def test_a_refusal_raises_its_type_and_keeps_its_code(home, monkeypatch, capsys)
 def test_json_puts_the_error_object_on_stdout(home, monkeypatch, capsys):
     limited = {"type": "rate_limit_error", "code": "rate_limited_concurrent", "retryable": True,
                "request_id": "req_2", "message": "3 runs are already going for this organization"}
-    assert _twin(home, monkeypatch, {"refusal": _refused(limited)}, "--json") == 1
+    with respx.mock:
+        made, _, _ = _api(created=httpx.Response(429, json={"error": limited}, headers={"retry-after": "60"}))
+        assert _run(home, monkeypatch, "--json") == 1
+        assert made.call_count == 1          # a rate limit is the caller's to wait out
     assert json.loads(capsys.readouterr().out) == {"error": limited}
 
 
-def test_a_failed_run_raises_its_code_and_run_id(home, monkeypatch, capsys):
-    failed = {"type": "run_error", "code": "twin_unclean", "retryable": False, "request_id": "req_3",
-              "run_id": "r9", "message": "the twin did not come out clean; nothing was written or charged"}
-    seen = {"outcome": {"run_id": "r9", "status": "failed", "error": failed}}
-    assert _twin(home, monkeypatch, seen, "--json") == 1
-    out = capsys.readouterr()
-    assert json.loads(out.out) == {"error": failed}
-    assert "(code: twin_unclean, request: req_3)" in out.err
-    assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
+@respx.mock
+def test_a_dropped_upload_is_retried_with_the_same_idempotency_key(home, monkeypatch):
+    made, _, _ = _api(statuses=("completed",))
+    made.mock(side_effect=[httpx.ConnectError("reset"),
+                           httpx.Response(503, json={"error": {"type": "api_error", "code": "unavailable",
+                                                               "retryable": True, "message": "try again"}},
+                                          headers={"retry-after": "2"}),
+                           httpx.Response(202, json=TWIN)])
+    (home / "trace.json").write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    slept = []
+    twin.twin(home / "trace.json", say=lambda s: None, sleep=slept.append)
+    keys = {c.request.headers["idempotency-key"] for c in made.calls}
+    assert made.call_count == 3 and len(keys) == 1
+    assert slept[:2] == [1.0, 2.0]
 
 
-def test_an_uncoded_tool_error_is_a_plain_metaphi_error():
-    from mcp.types import CallToolResult, TextContent
-    with pytest.raises(errors.MetaphiError) as e:
-        twin._structured(CallToolResult(content=[TextContent(type="text", text="twin_trace needs L3")],
-                                        is_error=True))
-    assert type(e.value) is errors.MetaphiError and e.value.code is None and str(e.value) == "twin_trace needs L3"
+def test_an_idempotency_conflict_is_its_own_type():
+    got = errors.from_object({"type": "idempotency_error", "code": "idempotency_key_reused", "message": "m"})
+    assert type(got) is errors.IdempotencyError
+
+
+def test_an_uncoded_answer_is_a_plain_error(home, monkeypatch):
+    with respx.mock:
+        _api(created=httpx.Response(502, text="bad gateway"))
+        (home / "trace.json").write_text("{}")
+        monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+        with pytest.raises(errors.APIError) as e:
+            twin.twin(home / "trace.json", say=lambda s: None, sleep=lambda s: None)
+    assert e.value.code is None and "HTTP 502" in str(e.value)
     got = errors.from_object({"type": "new_error", "code": "later", "message": "m"})
     assert type(got) is errors.MetaphiError and got.code == "later" and got.type == "new_error"
-    assert type(errors.from_object({"type": "api_error", "code": "unavailable", "message": "m",
-                                    "retryable": True})) is errors.APIError
+
+
+@respx.mock
+def test_keys_create_test_makes_a_test_mode_key(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["kennet:twin"],
+                                               "members": {}, "keys": []}])
+    made = respx.post(f"{A}/keys/orgs/acme").respond(json={"id": "key_2", "name": "dev", "key": "mai_sk_test_x",
+                                                           "scopes": ["kennet:twin"]})
+    assert cli.main(["keys", "create", "dev", "--test"]) == 0
+    assert json.loads(made.calls[0].request.content) == {"name": "dev", "scopes": ["kennet:twin"], "test": True}
+    assert "test-mode key_2" in capsys.readouterr().out
 
 
 def test_twin_without_a_key_says_how_to_get_one(home, capsys):

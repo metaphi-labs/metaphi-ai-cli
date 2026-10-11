@@ -94,8 +94,9 @@ def cmd_keys_list(a: argparse.Namespace) -> None:
 
 def cmd_keys_create(a: argparse.Namespace) -> None:
     o = accounts.org(a.org)
-    made = accounts.create_key(o["id"], a.name, a.scope or [SCOPE])
-    print(f"Created {made['id']} ({made['name']}) on {o['id']}, holding {' '.join(made['scopes'])}.\n")
+    made = accounts.create_key(o["id"], a.name, a.scope or [SCOPE], test=a.test)
+    mode = "test-mode " if a.test else ""
+    print(f"Created {mode}{made['id']} ({made['name']}) on {o['id']}, holding {' '.join(made['scopes'])}.\n")
     print(f"  {made['key']}\n")
     print("This is the only time the key is shown. Store it as a secret, e.g. METAPHI_API_KEY.")
     if a.save:
@@ -187,6 +188,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("name", help="what the key is for, e.g. prod or staging")
     s.add_argument("--scope", action="append", help=f"a scope the key holds (default {SCOPE}); repeatable")
     s.add_argument("--save", action="store_true", help="also keep it on this machine for `metaphi twin`")
+    s.add_argument("--test", action="store_true",
+                   help="a test-mode key (mai_sk_test_...): runs are free, small and kept apart from live ones")
     s.add_argument("--org")
     s.set_defaults(fn=cmd_keys_create)
     s = keys.add_parser("revoke", help="stop a key working")

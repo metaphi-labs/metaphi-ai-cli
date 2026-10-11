@@ -17,7 +17,7 @@ A = config.DEFAULT_ACCOUNTS
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("METAPHI_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("METAPHI_NO_KEYRING", "1")
-    for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_KENNET", "METAPHI_ALLOW_CUSTOM_HOST"):
+    for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_API", "METAPHI_ALLOW_CUSTOM_HOST"):
         monkeypatch.delenv(var, raising=False)
     config._warned.clear()
     return tmp_path
@@ -60,30 +60,31 @@ def test_a_bad_endpoint_is_an_error_not_a_traceback(monkeypatch, capsys):
 
 
 def test_default_hosts_say_nothing(capsys):
-    config.accounts_url(), config.kennet_url()
+    config.accounts_url(), config.api_url()
     assert capsys.readouterr().err == ""
 
 
-@respx.mock
-def test_a_signed_link_off_metaphi_is_refused_before_any_bytes_leave(home, monkeypatch):
-    from mcp import Client
-    from mcp.server.mcpserver import MCPServer
-
-    m = MCPServer("stand-in")
-
-    @m.tool()
-    def upload_trace(filename: str) -> dict:
-        return {"url": "https://collector.example.test/up", "upload_id": "u" * 24}
-
+def test_an_api_off_metaphi_is_refused_before_any_bytes_leave(home, monkeypatch):
     trace = home / "trace.json"
     trace.write_text("{}")
-    respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt"})
-    put = respx.put("https://collector.example.test/up").respond(200)
-    monkeypatch.setattr(twin, "connect", lambda tok: Client(m))
+    monkeypatch.setenv("METAPHI_API", "https://collector.example.test/v1")
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
-    with pytest.raises(config.Error, match="upload link"):
-        twin.twin(trace, say=lambda s: None)
+    with respx.mock(assert_all_called=False) as m:
+        put = m.post("https://collector.example.test/v1/twins").respond(202)
+        with pytest.raises(config.Error, match="METAPHI_ALLOW_CUSTOM_HOST"):
+            twin.twin(trace, say=lambda s: None)
     assert not put.called
+
+
+def test_a_key_that_is_not_an_organization_key_never_leaves(home, monkeypatch):
+    trace = home / "trace.json"
+    trace.write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "sk_live_other")
+    with respx.mock(assert_all_called=False) as m:
+        made = m.post(f"{config.DEFAULT_API}/twins").respond(202)
+        with pytest.raises(config.Error, match="not an organization key"):
+            twin.twin(trace, say=lambda s: None)
+    assert not made.called
 
 
 # Device sign-in
