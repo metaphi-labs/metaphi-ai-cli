@@ -1,4 +1,4 @@
-"""Anonymize a trace: upload it, run the anonymizer, download the result and its report.
+"""Anonymize a trace: upload it, run the anonymizer, download the twin. One file in, one file out, same format.
 
 The anonymizer is served over MCP (the tools upload_trace, anonymize_trace, get_task, pull_trace); this is a
 client of those tools, authenticated by an organization key exchanged for an hour-long token."""
@@ -92,20 +92,17 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
                 last = message
             if status in DONE:
                 break
-        output, report_path = find(task, "output_path"), find(task, "report_path")
+        output = find(task, "output_path")
         if status != "completed" or not output:
-            raise accounts.Error(f"anonymization {status}: {message or json.dumps(task)[:500]}")
+            raise accounts.Error(f"anonymization {status}: {find(task, 'error') or message or status}")
+        link = await tool("pull_trace", {"trace_path": output})
         with httpx.Client(timeout=600.0) as h:
-            for path, dest in ((output, out), (report_path, out.with_name(out.stem + ".report.json"))):
-                if not path:
-                    continue
-                link = await tool("pull_trace", {"trace_path": path})
-                r = h.get(config.check_url(link["url"], "the download link"))
-                if r.status_code >= 400:
-                    raise accounts.Error(f"download refused: {r.text.strip() or r.status_code}")
-                dest.write_bytes(r.content)
-                say(f"wrote {dest}")
-        return {"task": task, "output": str(out), "report": find(task, "report"), "twins": find(task, "twin_table")}
+            r = h.get(config.check_url(link["url"], "the download link"))
+        if r.status_code >= 400:
+            raise accounts.Error(f"download refused: {r.text.strip() or r.status_code}")
+        out.write_bytes(r.content)
+        say(f"wrote {out}")
+        return {"task": task, "output": str(out)}
 
 
 def _refusal(e: BaseException) -> config.Error | None:

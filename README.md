@@ -19,7 +19,8 @@ Calling it from Python instead: `pip install metaphi-ai` gives you the same comm
 ```sh
 metaphi login                  # opens the browser; confirm the code you see in the terminal
 metaphi keys create prod --save
-metaphi anonymize trace.json   # writes trace.anonymized.json and trace.anonymized.report.json
+metaphi credits                # your organization's prepaid balance
+metaphi anonymize trace.json   # writes trace.anonymized.json
 ```
 
 `metaphi login` signs you in as yourself. `metaphi keys create` makes an organization key (`mai_sk_...`). The key is
@@ -38,15 +39,15 @@ export METAPHI_API_KEY=mai_sk_...
 metaphi anonymize trace.json -o out.json --json
 ```
 
-`--json` prints `{"output", "report", "twins"}` on stdout, with progress on stderr. Or from Python:
+One trace file in, one twinned file out, in the same format. `--json` prints `{"output"}` on stdout, with progress
+on stderr. Or from Python:
 
 ```python
 from pathlib import Path
 from metaphi.anonymize import anonymize
 
 result = anonymize(Path("trace.json"), Path("out.json"), api_key="mai_sk_...")
-result["report"]   # entities found by kind, shape and leak checks
-result["twins"]    # what became what: keep it on your side
+result["output"]   # where the twinned trace was written
 ```
 
 One key per environment (`prod`, `staging`) or per customer is a good default. Revoking one stops only that key.
@@ -77,6 +78,19 @@ metaphi keys revoke key_0123abcd
 ```
 
 If you manage more than one organization, name it with `--org <id>`.
+
+## Credits
+
+Each completed trace draws your organization's prepaid credit; a run that fails costs nothing. When the balance
+reaches zero, new runs are refused until credit is added.
+
+```sh
+metaphi credits                       # the balance (owners, admins and billing members)
+metaphi credits buy --amount 200      # pay through Stripe Checkout in the browser; waits until it lands
+metaphi members add ap@yourco.com --role billing   # sees the balance and buys credit, nothing else
+```
+
+Only owners and billing members can buy.
 
 ## Configuration
 

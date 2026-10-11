@@ -80,9 +80,9 @@ def _anonymizer(seen):
         seen["polls"] = seen.get("polls", 0) + 1
         if seen["polls"] < 2:
             return {"taskId": task_id, "status": "working", "statusMessage": "reading"}
-        return {"taskId": task_id, "status": "completed", "result": {"structuredContent": {"calls": [
-            {"outcome": {"report": {"entities": 3}, "twin_table": {"Alice": "Morgan"},
-                         "output_path": "k/u/r/trace.json", "report_path": "k/u/r/report.json"}}]}}}
+        outcome = seen.get("outcome", {"run_id": "r", "status": "completed", "output_path": "k/u/r/trace.json"})
+        return {"taskId": task_id, "status": "completed",
+                "result": {"structuredContent": {"calls": [{"outcome": outcome}]}}}
 
     @m.tool()
     def pull_trace(trace_path: str) -> dict:
@@ -100,7 +100,6 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     token = respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
     put = respx.put("https://files.metaphi.ai/up").respond(200)
     respx.get("https://files.metaphi.ai/k/u/r/trace.json").respond(content=b'{"user": "Morgan"}')
-    respx.get("https://files.metaphi.ai/k/u/r/report.json").respond(json={"entities": 3})
     monkeypatch.setattr(anonymize, "connect", lambda tok: seen.update(token=tok) or Client(_anonymizer(seen)))
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
     assert cli.main(["anonymize", str(trace), "--confidential", "Acme", "--json"]) == 0
@@ -109,11 +108,81 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     assert put.calls[0].request.content == b'{"user": "Alice"}' and seen["filename"] == "trace.json"
     assert seen["args"] == {"upload_id": "u" * 24, "key": "", "confidential": ["Acme"]}
     assert (home / "trace.anonymized.json").read_text() == '{"user": "Morgan"}'
-    assert json.loads((home / "trace.anonymized.report.json").read_text()) == {"entities": 3}
-    assert json.loads(capsys.readouterr().out)["twins"] == {"Alice": "Morgan"}
+    assert sorted(p.name for p in home.iterdir() if p.is_file()) == ["trace.anonymized.json", "trace.json"]
+    assert json.loads(capsys.readouterr().out) == {"output": str(home / "trace.anonymized.json")}
+
+
+def test_a_failed_run_says_why_and_writes_nothing(home, monkeypatch, capsys):
+    from mcp import Client
+    (home / "trace.json").write_text("{}")
+    seen = {"outcome": {"run_id": "r", "status": "failed", "error": "the twin still held an original value"}}
+    with respx.mock:
+        respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
+        respx.put("https://files.metaphi.ai/up").respond(200)
+        monkeypatch.setattr(anonymize, "connect", lambda tok: Client(_anonymizer(seen)))
+        monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+        assert cli.main(["anonymize", str(home / "trace.json")]) == 1
+    assert "the twin still held an original value" in capsys.readouterr().err
+    assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
 
 
 def test_anonymize_without_a_key_says_how_to_get_one(home, capsys):
     (home / "t.json").write_text("{}")
     assert cli.main(["anonymize", str(home / "t.json")]) == 1
     assert "METAPHI_API_KEY" in capsys.readouterr().err
+
+
+ORG = {"id": "acme", "name": "Acme", "role": "billing", "can_buy": True, "credits_usd": 12.5}
+
+
+@respx.mock
+def test_credits_shows_the_balance(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/credits/orgs").respond(json=[ORG])
+    assert cli.main(["credits"]) == 0
+    assert capsys.readouterr().out.strip() == "acme: $12.50 prepaid credit"
+    respx.get(f"{A}/credits/orgs").respond(json=[{**ORG, "credits_usd": -3.0, "can_buy": False}])
+    assert cli.main(["credits", "--org", "acme"]) == 0
+    assert "ask an owner or billing member" in capsys.readouterr().out
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    assert cli.main(["credits"]) == 1
+
+
+@respx.mock
+def test_credits_buy_opens_checkout_and_waits_until_paid(monkeypatch, capsys):
+    config.save({"token": "tok"})
+    monkeypatch.setattr(accounts.time, "sleep", lambda s: None)
+    respx.get(f"{A}/credits/orgs").respond(json=[ORG])
+    made = respx.post(f"{A}/credits/orgs/acme/checkout").respond(
+        json={"url": "https://checkout.stripe.com/c/pay/cs_1", "id": "cs_1"})
+    respx.get(f"{A}/credits/orgs/acme/checkout/cs_1").mock(side_effect=[
+        httpx.Response(200, json={"paid": False, "credits_usd": 12.5}),
+        httpx.Response(200, json={"paid": True, "credits_usd": 62.5})])
+    assert cli.main(["credits", "buy", "--amount", "50", "--no-browser"]) == 0
+    assert json.loads(made.calls[0].request.content) == {"usd": 50.0}
+    assert made.calls[0].request.headers["authorization"] == "Bearer tok"
+    out = capsys.readouterr().out
+    assert "https://checkout.stripe.com/c/pay/cs_1" in out and "acme: $62.50 prepaid credit" in out
+
+
+@respx.mock
+def test_only_owners_and_billing_buy_and_only_through_stripe(monkeypatch, capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/credits/orgs").respond(json=[{**ORG, "role": "admin", "can_buy": False}])
+    assert cli.main(["credits", "buy", "--no-browser"]) == 1
+    assert "only an owner or billing member" in capsys.readouterr().err
+    respx.get(f"{A}/credits/orgs").respond(json=[ORG])
+    respx.post(f"{A}/credits/orgs/acme/checkout").respond(json={"url": "https://evil.test/pay", "id": "cs_1"})
+    assert cli.main(["credits", "buy", "--no-browser"]) == 1
+    assert "not Stripe's" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main(["credits", "buy", "--amount", "0"])
+
+
+@respx.mock
+def test_a_billing_member_is_added_by_role():
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": [], "members": {}, "keys": []}])
+    put = respx.put(f"{A}/keys/orgs/acme/members/pay@acme.test").respond(json={})
+    assert cli.main(["members", "add", "pay@acme.test", "--role", "billing"]) == 0
+    assert json.loads(put.calls[0].request.content) == {"role": "billing"}
