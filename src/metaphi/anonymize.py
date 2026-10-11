@@ -1,4 +1,4 @@
-"""Anonymize a trace: upload it, run the anonymizer, download the anonymized trace. One file in, one file out.
+"""Anonymize a trace: upload it, run the anonymizer, download the twin. One file in, one file out, same format.
 
 The anonymizer is served over MCP (the tools upload_trace, anonymize_trace, get_task, pull_trace); this is a
 client of those tools, authenticated by an organization key exchanged for an hour-long token."""
@@ -94,7 +94,7 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
                 break
         output = find(task, "output_path")
         if status != "completed" or not output:
-            raise accounts.Error(f"anonymization {status}: {message or json.dumps(task)[:500]}")
+            raise accounts.Error(f"anonymization {status}: {find(task, 'error') or message or status}")
         link = await tool("pull_trace", {"trace_path": output})
         with httpx.Client(timeout=600.0) as h:
             r = h.get(config.check_url(link["url"], "the download link"))

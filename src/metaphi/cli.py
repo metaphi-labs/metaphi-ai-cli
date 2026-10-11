@@ -137,6 +137,32 @@ def cmd_anonymize(a: argparse.Namespace) -> None:
         print(json.dumps({"output": got["output"]}, indent=2))
 
 
+def _usd(value: str) -> float:
+    try:
+        usd = round(float(value), 2)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an amount: {value!r}") from None
+    if not 1 <= usd <= 10000:
+        raise argparse.ArgumentTypeError("an amount is between 1 and 10000 dollars")
+    return usd
+
+
+def cmd_credits(a: argparse.Namespace) -> None:
+    o = accounts.credit_of(a.org)
+    print(f"{o['id']}: ${o['credits_usd']:,.2f} prepaid credit")
+    if o["credits_usd"] <= 0:
+        print("Runs are refused until credit is added" + (": `metaphi credits buy`." if o.get("can_buy") else
+                                                         "; ask an owner or billing member to add it."))
+
+
+def cmd_credits_buy(a: argparse.Namespace) -> None:
+    o = accounts.credit_of(a.org)
+    if not o.get("can_buy"):
+        raise accounts.Error(f"only an owner or billing member of {o['id']} can buy its credit")
+    got = accounts.buy(o["id"], a.amount, open_browser=not a.no_browser)
+    print(f"Paid. {o['id']}: ${got['credits_usd']:,.2f} prepaid credit")
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="metaphi", description="The Metaphi AI command line.")
     p.add_argument("--version", action="version", version=f"metaphi {__version__}")
@@ -175,13 +201,24 @@ def parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_members_list)
     s = members.add_parser("add", help="add a person, or change their role")
     s.add_argument("email")
-    s.add_argument("--role", default="member", choices=("member", "admin", "owner"))
+    s.add_argument("--role", default="member", choices=("member", "billing", "admin", "owner"),
+                   help="billing: sees the balance and buys credit, nothing else")
     s.add_argument("--org")
     s.set_defaults(fn=cmd_members_add)
     s = members.add_parser("remove")
     s.add_argument("email")
     s.add_argument("--org")
     s.set_defaults(fn=cmd_members_remove)
+
+    s = sub.add_parser("credits", help="your organization's prepaid balance")
+    s.add_argument("--org")
+    s.set_defaults(fn=cmd_credits)
+    credits = s.add_subparsers(dest="verb", metavar="<verb>")
+    b = credits.add_parser("buy", help="add credit through Stripe Checkout (owners and billing members)")
+    b.add_argument("--amount", type=_usd, default=100.0, help="dollars to add (default 100)")
+    b.add_argument("--org")
+    b.add_argument("--no-browser", action="store_true", help="print the link instead of opening it")
+    b.set_defaults(fn=cmd_credits_buy)
 
     s = sub.add_parser("anonymize", help="anonymize a trace (JSON, JSON Lines or text)")
     s.add_argument("file")
