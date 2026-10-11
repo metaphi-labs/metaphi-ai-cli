@@ -91,6 +91,8 @@ def test_twin_uploads_polls_and_downloads(home, monkeypatch, capsys):
                 "--json") == 0
     request = made.calls[0].request
     assert request.headers["authorization"] == "Bearer mai_sk_live"
+    assert request.headers["metaphi-version"] == "2026-10-11"
+    assert str(request.url) == "https://api.metaphi.ai/v1/kennet/twins"
     assert len(request.headers["idempotency-key"]) == 32
     body = request.content
     assert b'filename="trace.json"' in body and b'{"user": "Alice"}' in body

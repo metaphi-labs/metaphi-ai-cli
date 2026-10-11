@@ -1,7 +1,8 @@
 """Twin a trace: upload it, wait for its twin, download it. One file in, one file out, same format.
 
-A client of the twin API (METAPHI_API, default https://kennet.metaphi.ai/v1), authenticated by the organization key as
-a bearer: POST /v1/twins with the file, GET /v1/twins/{id} until it ends (backing off), GET its content. The upload
+A client of the Kennet API (METAPHI_API, default https://api.metaphi.ai/v1/kennet), authenticated by the organization
+key as a bearer, at the API version it was written for (Metaphi-Version): POST /twins with the file, GET /twins/{id}
+until it ends (backing off), GET its content. The upload
 carries an Idempotency-Key drawn once per call, so a retry after a dropped connection or a 5xx never starts a second
 run. Every refusal or failed run raises the typed error the API said (metaphi.errors), its code and request id kept."""
 from __future__ import annotations
@@ -22,6 +23,7 @@ TRIES = 4                   # attempts of one request that failed in transit or 
 FIRST_WAIT_S = 1.0          # the first poll's wait; each next one 1.5 times longer, up to MAX_WAIT_S
 MAX_WAIT_S = 15.0
 MAX_RETRY_AFTER_S = 120.0
+API_VERSION = "2026-10-11"  # the API version this client speaks
 
 
 def _error(r: httpx.Response) -> errors.MetaphiError:
@@ -66,7 +68,7 @@ def _send(h: httpx.Client, method: str, path: str, sleep: Callable[[float], None
 
 def _client(key: str) -> httpx.Client:
     return httpx.Client(base_url=config.api_url(), timeout=httpx.Timeout(60.0, read=600.0),
-                        headers={"authorization": f"Bearer {key}",
+                        headers={"authorization": f"Bearer {key}", "metaphi-version": API_VERSION,
                                  "user-agent": f"metaphi-cli/{__import__('metaphi').__version__}"})
 
 

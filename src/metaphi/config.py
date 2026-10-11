@@ -3,7 +3,7 @@
     METAPHI_API_KEY            an organization's key (mai_sk_...): overrides the saved one, for servers and CI
     METAPHI_HOME               the directory the config file lives in (default ~/.config/metaphi)
     METAPHI_ACCOUNTS           the accounts host (default https://app.metaphi.ai)
-    METAPHI_API                the twin API (default https://twin.metaphi.ai/v1)
+    METAPHI_API                the twin API (default https://api.metaphi.ai/v1/kennet)
     METAPHI_ALLOW_CUSTOM_HOST  1 lets the two above, and the file links they hand out, leave metaphi.ai
     METAPHI_NO_KEYRING         1 keeps secrets in the config file even when an OS keychain is available
 
@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 DEFAULT_ACCOUNTS = "https://app.metaphi.ai"
-DEFAULT_API = "https://twin.metaphi.ai/v1"
+DEFAULT_API = "https://api.metaphi.ai/v1/kennet"
 ALLOWED_DOMAIN = "metaphi.ai"
 KEY_PREFIX = "mai_sk_"
 KEYRING_SERVICE = "metaphi-ai"
