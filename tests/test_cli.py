@@ -23,7 +23,8 @@ def home(tmp_path, monkeypatch):
 @respx.mock
 def test_login_polls_the_device_grant_until_approved_and_keeps_the_token(home):
     code = respx.post(f"{A}/device/code").respond(json={"device_code": "dc", "user_code": "ABCD-EFGH", "interval": 0,
-                                                 "expires_in": 60, "verification_uri_complete": f"{A}/device?x"})
+                                                 "expires_in": 60, "verification_uri": f"{A}/device",
+                                                 "verification_uri_complete": f"{A}/device?x"})
     polls = respx.post(f"{A}/oauth/token").mock(side_effect=[
         httpx.Response(400, json={"error": "authorization_pending"}),
         httpx.Response(200, json={"access_token": "tok", "token_type": "Bearer", "email": "alice@example.test"})])
@@ -81,8 +82,7 @@ def _anonymizer(seen):
         if seen["polls"] < 2:
             return {"taskId": task_id, "status": "working", "statusMessage": "reading"}
         return {"taskId": task_id, "status": "completed", "result": {"structuredContent": {"calls": [
-            {"outcome": {"report": {"entities": 3}, "twin_table": {"Alice": "Morgan"},
-                         "output_path": "k/u/r/trace.json", "report_path": "k/u/r/report.json"}}]}}}
+            {"outcome": {"output_path": "k/u/r/trace.json"}}]}}}
 
     @m.tool()
     def pull_trace(trace_path: str) -> dict:
@@ -100,7 +100,6 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     token = respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
     put = respx.put("https://files.metaphi.ai/up").respond(200)
     respx.get("https://files.metaphi.ai/k/u/r/trace.json").respond(content=b'{"user": "Morgan"}')
-    respx.get("https://files.metaphi.ai/k/u/r/report.json").respond(json={"entities": 3})
     monkeypatch.setattr(anonymize, "connect", lambda tok: seen.update(token=tok) or Client(_anonymizer(seen)))
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
     assert cli.main(["anonymize", str(trace), "--confidential", "Acme", "--json"]) == 0
@@ -109,8 +108,8 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     assert put.calls[0].request.content == b'{"user": "Alice"}' and seen["filename"] == "trace.json"
     assert seen["args"] == {"upload_id": "u" * 24, "key": "", "confidential": ["Acme"]}
     assert (home / "trace.anonymized.json").read_text() == '{"user": "Morgan"}'
-    assert json.loads((home / "trace.anonymized.report.json").read_text()) == {"entities": 3}
-    assert json.loads(capsys.readouterr().out)["twins"] == {"Alice": "Morgan"}
+    assert sorted(p.name for p in home.iterdir() if p.is_file()) == ["trace.anonymized.json", "trace.json"]
+    assert json.loads(capsys.readouterr().out) == {"output": str(home / "trace.anonymized.json")}
 
 
 def test_anonymize_without_a_key_says_how_to_get_one(home, capsys):

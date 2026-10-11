@@ -107,6 +107,12 @@ def _keyring() -> Any:
     return keyring
 
 
+def keyring_backend() -> str:
+    """What holds secrets on this machine, for `metaphi --debug-keyring`."""
+    kr = _keyring()
+    return f"keyring: {kr.get_keyring()!r}" if kr is not None else f"file: {path()}"
+
+
 def _read_file() -> dict[str, Any]:
     p = path()
     try:

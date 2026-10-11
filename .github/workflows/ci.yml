@@ -25,6 +25,38 @@ jobs:
           bad=$( (tar tzf dist/*.tar.gz; unzip -Z1 dist/*.whl) | grep -E '(^|/)(tests|\.github)/' || true)
           if [ -n "$bad" ]; then echo "::error::the distributions carry files that must not ship:"; echo "$bad"; exit 1; fi
 
+  binary:
+    # The release's one-file build, on a PR: it must start and find a real keychain backend.
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - run: uv sync --frozen --no-dev --group release --python 3.12
+      - name: pyinstaller (as release.yml)
+        run: |
+          extra=()
+          if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
+          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name metaphi \
+            --collect-submodules mcp.client --collect-submodules mcp.shared --collect-submodules mcp_types \
+            --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
+            src/metaphi/__main__.py
+      - run: ./dist/metaphi --version
+      - name: the binary loads a real keychain backend
+        run: |
+          got=$(./dist/metaphi --debug-keyring)
+          echo "$got"
+          if [ "$RUNNER_OS" = macOS ]; then
+            case "$got" in *keyring.backends.macOS*) ;; *) echo "::error::no macOS Keychain backend in the binary"; exit 1;; esac
+          fi
+
   workflows:
     runs-on: ubuntu-latest
     steps:

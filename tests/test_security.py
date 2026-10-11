@@ -98,10 +98,53 @@ def test_a_non_json_device_answer_is_an_error():
 @respx.mock
 def test_a_non_json_poll_answer_is_an_error():
     respx.post(f"{A}/device/code").respond(json={"device_code": "dc", "user_code": "U", "interval": 1,
-                                                 "expires_in": 60, "verification_uri_complete": f"{A}/device"})
+                                                 "expires_in": 60, "verification_uri": f"{A}/device"})
     respx.post(f"{A}/oauth/token").mock(return_value=httpx.Response(502, text="bad gateway"))
     with pytest.raises(accounts.Error, match="bad gateway"):
         accounts.login(say=lambda s: None, open_browser=False, sleep=lambda s: None)
+
+
+def _sign_in(code_body, monkeypatch):
+    opened, said = [], []
+    monkeypatch.setattr(accounts.webbrowser, "open", opened.append)
+    respx.post(f"{A}/device/code").respond(json=code_body)
+    respx.post(f"{A}/oauth/token").respond(json={"access_token": "tok"})
+    accounts.login(say=said.append, open_browser=True, sleep=lambda s: None)
+    return opened, said
+
+
+@respx.mock
+def test_device_sign_in_without_a_prefilled_link_has_the_person_type_the_code(monkeypatch):
+    opened, said = _sign_in({"device_code": "dc", "user_code": "WDJB-MJHT", "verification_uri": f"{A}/device"},
+                            monkeypatch)
+    assert opened == [f"{A}/device"]
+    assert said[0] == f"Open {A}/device and enter the code WDJB-MJHT"
+
+
+@respx.mock
+def test_device_sign_in_opens_the_prefilled_link_when_there_is_one(monkeypatch):
+    opened, said = _sign_in({"device_code": "dc", "user_code": "WDJB-MJHT", "verification_uri": f"{A}/device",
+                             "verification_uri_complete": f"{A}/device?user_code=WDJB-MJHT"}, monkeypatch)
+    assert opened == [f"{A}/device?user_code=WDJB-MJHT"]
+    assert "WDJB-MJHT" in said[0] and f"{A}/device" in said[0]
+
+
+@pytest.mark.parametrize("body", [
+    {"device_code": "dc", "user_code": "U"},
+    {"device_code": "dc", "verification_uri": f"{A}/device"},
+    {"user_code": "U", "verification_uri": f"{A}/device"},
+    {"device_code": "dc", "user_code": "U", "verification_uri": "https://phish.example.test/device"},
+    {"device_code": "dc", "user_code": "U", "verification_uri": f"{A}/device",
+     "verification_uri_complete": "https://phish.example.test/device"},
+])
+@respx.mock
+def test_an_incomplete_or_off_domain_device_code_is_refused(body, monkeypatch):
+    opened = []
+    monkeypatch.setattr(accounts.webbrowser, "open", opened.append)
+    respx.post(f"{A}/device/code").respond(json=body)
+    with pytest.raises(config.Error):
+        accounts.login(say=lambda s: None, open_browser=True, sleep=lambda s: None)
+    assert opened == []
 
 
 # Secrets at rest
@@ -216,3 +259,9 @@ def test_a_key_on_argv_still_works_but_warns(home, capsys):
     with pytest.raises(SystemExit):
         cli.parser().parse_args(["anonymize", "--help"])
     assert "deprecated" in capsys.readouterr().out
+
+
+def test_debug_keyring_says_where_secrets_go(capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--debug-keyring"])
+    assert e.value.code == 0 and capsys.readouterr().out.startswith("file: ")

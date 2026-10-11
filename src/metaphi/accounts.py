@@ -56,11 +56,15 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
         if r.status_code != 200:
             raise Error(_said(r))
         code = _json(r)
-        if not all(isinstance(code.get(k), str) for k in ("device_code", "user_code", "verification_uri_complete")):
+        if not all(isinstance(code.get(k), str) and code[k] for k in ("device_code", "user_code", "verification_uri")):
             raise Error("the sign-in server sent an incomplete device code")
-        say(f"Your code is {code['user_code']}. Confirm it in the browser:\n  {code['verification_uri_complete']}")
+        # RFC 8628 §3.3: the person types the code at verification_uri; verification_uri_complete is optional.
+        uri, complete = code["verification_uri"], code.get("verification_uri_complete")
+        config.check_url(uri, "the sign-in page")
+        say(f"Open {uri} and enter the code {code['user_code']}")
         if open_browser:
-            webbrowser.open(code["verification_uri_complete"])
+            webbrowser.open(config.check_url(complete, "the sign-in page") if isinstance(complete, str) and complete
+                            else uri)
         try:
             interval = max(MIN_INTERVAL, float(code.get("interval") or MIN_INTERVAL))
             deadline = time.time() + min(float(code.get("expires_in") or 600), 1800.0)

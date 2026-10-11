@@ -37,6 +37,14 @@ class _OnArgv(argparse.Action):
         setattr(ns, self.dest, value)
 
 
+class _DebugKeyring(argparse.Action):
+    """Say where secrets would be kept, and stop: the release proves a real keychain backend loads in the binary."""
+
+    def __call__(self, p: argparse.ArgumentParser, ns: argparse.Namespace, value: object, opt: str | None = None):
+        print(config.keyring_backend())
+        p.exit()
+
+
 def _read_key() -> str:
     """An organization key from stdin when it is piped, else from a prompt that does not echo."""
     if sys.stdin is not None and not sys.stdin.isatty():
@@ -126,12 +134,13 @@ def cmd_anonymize(a: argparse.Namespace) -> None:
     got = anonymize(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
                     a.confidential, say=say)
     if a.json:
-        print(json.dumps({k: got[k] for k in ("output", "report", "twins")}, indent=2))
+        print(json.dumps({"output": got["output"]}, indent=2))
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="metaphi", description="The Metaphi AI command line.")
     p.add_argument("--version", action="version", version=f"metaphi {__version__}")
+    p.add_argument("--debug-keyring", nargs=0, action=_DebugKeyring, help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
 
     s = sub.add_parser("login", help="sign in through the browser (or save a key with --with-api-key)")
