@@ -132,12 +132,14 @@ def deadline() -> float:
 def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_hex: str = "",
          confidential: list[str] | None = None, say: Callable[[str], None] = print,
          sleep: Callable[[float], None] = time.sleep, deadline_s: float | None = None,
-         clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+         clock: Callable[[], float] = time.monotonic, test: bool = False) -> dict[str, Any]:
     """Twin one trace file into `out` (default <name>.twin<ext>); answers {"output", "id"}. Waiting past
-    `deadline_s` (default `deadline()`) raises a retryable APIError naming the twin, which goes on running."""
-    key = config.api_key(api_key)
+    `deadline_s` (default `deadline()`) raises a retryable APIError naming the twin, which goes on running.
+    `test` runs on the test key `metaphi login` saved: free, small, apart from live twins."""
+    key = config.api_key(api_key, test)
     if not key:
-        raise accounts.Error("no key: set METAPHI_API_KEY, or run `metaphi login --with-api-key` or `metaphi keys create`")
+        raise accounts.Error("no test key: run `metaphi login`, or set METAPHI_API_KEY to a test key" if test else
+                             "no key: run `metaphi login`, or set METAPHI_API_KEY")
     if not key.startswith(config.KEY_PREFIX):
         raise accounts.Error(f"that is not an organization key ({config.KEY_PREFIX}...)")
     if not trace.is_file():

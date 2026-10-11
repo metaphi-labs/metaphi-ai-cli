@@ -8,7 +8,7 @@
     METAPHI_TWIN_TIMEOUT       seconds `metaphi twin` waits for a twin to end (default 7200)
     METAPHI_NO_KEYRING         1 keeps secrets in the config file even when an OS keychain is available
 
-Secrets (the saved key and the sign-in token) go to the OS keychain through `keyring` when one is available;
+Secrets (the saved keys and the sign-in token) go to the OS keychain through `keyring` when one is available;
 otherwise into the config file, in a directory only its owner can enter, written atomically with mode 600.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ DEFAULT_API = "https://api.metaphi.ai/v1/kennet"
 ALLOWED_DOMAIN = "metaphi.ai"
 KEY_PREFIX = "mai_sk_"
 KEYRING_SERVICE = "metaphi-ai"
-SECRETS = ("api_key", "token")
+SECRETS = ("api_key", "test_api_key", "token")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
 
@@ -188,6 +188,6 @@ def save(cfg: dict[str, Any]) -> None:
     _write_file(plain)
 
 
-def api_key(flag: str | None = None) -> str | None:
-    """The key a call runs on: the argument, then METAPHI_API_KEY, then the saved one."""
-    return flag or os.environ.get("METAPHI_API_KEY") or load().get("api_key")
+def api_key(flag: str | None = None, test: bool = False) -> str | None:
+    """The key a call runs on: the argument, then METAPHI_API_KEY, then the saved one (`test`: the saved test key)."""
+    return flag or os.environ.get("METAPHI_API_KEY") or load().get("test_api_key" if test else "api_key")
