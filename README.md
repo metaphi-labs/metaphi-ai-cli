@@ -1,6 +1,6 @@
 # metaphi
 
-The Metaphi AI command line. Sign in, manage your organization's people and keys, and anonymize agent traces.
+The Metaphi AI command line. Sign in, manage your organization's people and keys, and twin agent traces.
 
 ## Install
 
@@ -20,7 +20,7 @@ Calling it from Python instead: `pip install metaphi-ai` gives you the same comm
 metaphi login                  # opens the browser; confirm the code you see in the terminal
 metaphi keys create prod --save
 metaphi credits                # your organization's prepaid balance
-metaphi anonymize trace.json   # writes trace.anonymized.json
+metaphi twin trace.json        # writes trace.twin.json
 ```
 
 `metaphi login` signs you in as yourself. `metaphi keys create` makes an organization key (`mai_sk_...`). The key is
@@ -36,7 +36,7 @@ Every call that does work runs on an organization key, never on a person's sign-
 
 ```sh
 export METAPHI_API_KEY=mai_sk_...
-metaphi anonymize trace.json -o out.json --json
+metaphi twin trace.json -o out.json --json
 ```
 
 One trace file in, one twinned file out, in the same format. `--json` prints `{"output"}` on stdout, with progress
@@ -44,19 +44,19 @@ on stderr. Or from Python:
 
 ```python
 from pathlib import Path
-from metaphi.anonymize import anonymize
+from metaphi.twin import twin
 
-result = anonymize(Path("trace.json"), Path("out.json"), api_key="mai_sk_...")
+result = twin(Path("trace.json"), Path("out.json"), api_key="mai_sk_...")
 result["output"]   # where the twinned trace was written
 ```
 
 One key per environment (`prod`, `staging`) or per customer is a good default. Revoking one stops only that key.
 
-### Anonymize options
+### Twin options
 
 | Flag | What it does |
 | --- | --- |
-| `-o, --output` | Where the anonymized trace goes. Default: `<name>.anonymized<ext>`. |
+| `-o, --output` | Where the twinned trace goes. Default: `<name>.twin<ext>`. |
 | `--key <64 hex>` | Keys the stand-in values. The same key gives a person the same stand-in in every trace, so a corpus stays consistent. Default: a fresh key per trace. |
 | `--confidential <org>` | Replaces an organization even though it is public, e.g. your customer. Repeatable. |
 

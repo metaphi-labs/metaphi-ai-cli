@@ -2,7 +2,7 @@
 
     metaphi login                        sign in through the browser
     metaphi keys create prod             make an organization key (shown once)
-    metaphi anonymize trace.json         anonymize a trace with that key
+    metaphi twin trace.json              twin a trace with that key
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from metaphi import __version__, accounts, config
 
-SCOPE = "kennet:anonymize"
+SCOPE = "kennet:twin"
 
 
 def _table(rows: list[list[str]]) -> None:
@@ -128,10 +128,10 @@ def cmd_members_remove(a: argparse.Namespace) -> None:
     print(f"{a.email} removed from {o['id']}.")
 
 
-def cmd_anonymize(a: argparse.Namespace) -> None:
-    from metaphi.anonymize import anonymize
+def cmd_twin(a: argparse.Namespace) -> None:
+    from metaphi.twin import twin
     say = (lambda s: print(s, file=sys.stderr)) if a.json else print
-    got = anonymize(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
+    got = twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
                     a.confidential, say=say)
     if a.json:
         print(json.dumps({"output": got["output"]}, indent=2))
@@ -186,7 +186,7 @@ def parser() -> argparse.ArgumentParser:
     s = keys.add_parser("create", help="make a key; it is shown once")
     s.add_argument("name", help="what the key is for, e.g. prod or staging")
     s.add_argument("--scope", action="append", help=f"a scope the key holds (default {SCOPE}); repeatable")
-    s.add_argument("--save", action="store_true", help="also keep it on this machine for `metaphi anonymize`")
+    s.add_argument("--save", action="store_true", help="also keep it on this machine for `metaphi twin`")
     s.add_argument("--org")
     s.set_defaults(fn=cmd_keys_create)
     s = keys.add_parser("revoke", help="stop a key working")
@@ -220,14 +220,14 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--no-browser", action="store_true", help="print the link instead of opening it")
     b.set_defaults(fn=cmd_credits_buy)
 
-    s = sub.add_parser("anonymize", help="anonymize a trace (JSON, JSON Lines or text)")
+    s = sub.add_parser("twin", help="twin a trace (JSON, JSON Lines or text)")
     s.add_argument("file")
-    s.add_argument("-o", "--output", help="where the anonymized trace goes (default <name>.anonymized<ext>)")
+    s.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext>)")
     s.add_argument("--key", help="64 hex characters: the same key gives a person the same stand-in in every trace")
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
     s.add_argument("--api-key", action=_OnArgv, help="deprecated: set METAPHI_API_KEY instead")
     s.add_argument("--json", action="store_true", help="print the result as JSON on stdout")
-    s.set_defaults(fn=cmd_anonymize)
+    s.set_defaults(fn=cmd_twin)
     return p
 
 

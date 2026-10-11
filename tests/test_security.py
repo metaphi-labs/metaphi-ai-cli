@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from metaphi import accounts, anonymize, cli, config
+from metaphi import accounts, cli, config, twin
 
 A = config.DEFAULT_ACCOUNTS
 
@@ -79,10 +79,10 @@ def test_a_signed_link_off_metaphi_is_refused_before_any_bytes_leave(home, monke
     trace.write_text("{}")
     respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt"})
     put = respx.put("https://collector.example.test/up").respond(200)
-    monkeypatch.setattr(anonymize, "connect", lambda tok: Client(m))
+    monkeypatch.setattr(twin, "connect", lambda tok: Client(m))
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
     with pytest.raises(config.Error, match="upload link"):
-        anonymize.anonymize(trace, say=lambda s: None)
+        twin.twin(trace, say=lambda s: None)
     assert not put.called
 
 
@@ -257,7 +257,7 @@ def test_a_key_on_argv_still_works_but_warns(home, capsys):
     assert config.load()["api_key"] == "mai_sk_argv"
     assert "shell history" in capsys.readouterr().err
     with pytest.raises(SystemExit):
-        cli.parser().parse_args(["anonymize", "--help"])
+        cli.parser().parse_args(["twin", "--help"])
     assert "deprecated" in capsys.readouterr().out
 
 

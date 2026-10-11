@@ -3,7 +3,7 @@
     METAPHI_API_KEY            an organization's key (mai_sk_...): overrides the saved one, for servers and CI
     METAPHI_HOME               the directory the config file lives in (default ~/.config/metaphi)
     METAPHI_ACCOUNTS           the accounts host (default https://app.metaphi.ai)
-    METAPHI_KENNET             the anonymize endpoint (default https://kennet.metaphi.ai/mcp/)
+    METAPHI_KENNET             the twin endpoint (default https://kennet.metaphi.ai/mcp/)
     METAPHI_ALLOW_CUSTOM_HOST  1 lets the two above, and the file links they hand out, leave metaphi.ai
     METAPHI_NO_KEYRING         1 keeps secrets in the config file even when an OS keychain is available
 
