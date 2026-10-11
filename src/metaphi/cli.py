@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 from pathlib import Path
@@ -27,14 +28,31 @@ def _when(t: float | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "-"
 
 
+class _OnArgv(argparse.Action):
+    """A secret passed as an argument: still accepted, but it lands in shell history and `ps`, so say so."""
+
+    def __call__(self, p: argparse.ArgumentParser, ns: argparse.Namespace, value: object, opt: str | None = None):
+        print(f"metaphi: warning: {opt} puts the key in your shell history and process list and will be removed; "
+              "use METAPHI_API_KEY or `metaphi login --with-api-key` (reads stdin)", file=sys.stderr)
+        setattr(ns, self.dest, value)
+
+
+def _read_key() -> str:
+    """An organization key from stdin when it is piped, else from a prompt that does not echo."""
+    if sys.stdin is not None and not sys.stdin.isatty():
+        return sys.stdin.readline().strip()
+    return getpass.getpass("Organization key (mai_sk_...): ").strip()
+
+
 def cmd_login(a: argparse.Namespace) -> None:
-    if a.api_key:
-        if not a.api_key.startswith(config.KEY_PREFIX):
+    key = a.api_key or (_read_key() if a.with_api_key else None)
+    if a.with_api_key or a.api_key:
+        if not key or not key.startswith(config.KEY_PREFIX):
             raise accounts.Error(f"that is not an organization key ({config.KEY_PREFIX}...)")
         cfg = config.load()
-        cfg["api_key"] = a.api_key
+        cfg["api_key"] = key
         config.save(cfg)
-        print(f"key saved to {config.path()}")
+        print("key saved on this machine")
         return
     got = accounts.login(open_browser=not a.no_browser)
     print(f"Signed in as {got.get('email')}.")
@@ -76,7 +94,7 @@ def cmd_keys_create(a: argparse.Namespace) -> None:
         cfg = config.load()
         cfg["api_key"] = made["key"]
         config.save(cfg)
-        print(f"Also saved to {config.path()} for this machine.")
+        print("Also saved on this machine.")
 
 
 def cmd_keys_revoke(a: argparse.Namespace) -> None:
@@ -116,8 +134,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"metaphi {__version__}")
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
 
-    s = sub.add_parser("login", help="sign in through the browser (or save a key with --api-key)")
-    s.add_argument("--api-key", help="save an organization key on this machine instead of signing in")
+    s = sub.add_parser("login", help="sign in through the browser (or save a key with --with-api-key)")
+    s.add_argument("--with-api-key", action="store_true",
+                   help="save an organization key on this machine instead of signing in; reads it from stdin")
+    s.add_argument("--api-key", action=_OnArgv, help=argparse.SUPPRESS)
     s.add_argument("--no-browser", action="store_true", help="print the link instead of opening it")
     s.set_defaults(fn=cmd_login)
     sub.add_parser("logout", help="sign out everywhere this sign-in is used").set_defaults(fn=cmd_logout)
@@ -159,7 +179,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("-o", "--output", help="where the anonymized trace goes (default <name>.anonymized<ext>)")
     s.add_argument("--key", help="64 hex characters: the same key gives a person the same stand-in in every trace")
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
-    s.add_argument("--api-key", help="an organization key (default METAPHI_API_KEY, then the saved one)")
+    s.add_argument("--api-key", action=_OnArgv, help="deprecated: set METAPHI_API_KEY instead")
     s.add_argument("--json", action="store_true", help="print the result as JSON on stdout")
     s.set_defaults(fn=cmd_anonymize)
     return p
@@ -169,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
     try:
         a.fn(a)
-    except accounts.Error as e:
+    except config.Error as e:
         print(f"metaphi: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

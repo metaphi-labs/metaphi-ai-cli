@@ -58,7 +58,7 @@ def connect(token: str) -> Any:
     from mcp.client.streamable_http import streamable_http_client
 
     http = httpx2.AsyncClient(headers={"authorization": f"Bearer {token}"}, timeout=httpx2.Timeout(60.0, read=300.0))
-    return Client(streamable_http_client(config.KENNET, http_client=http))
+    return Client(streamable_http_client(config.kennet_url(), http_client=http))
 
 
 async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: list[str],
@@ -69,7 +69,7 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
 
         up = await tool("upload_trace", {"filename": trace.name})
         with httpx.Client(timeout=600.0) as h:
-            r = h.put(up["url"], content=trace.read_bytes())
+            r = h.put(config.check_url(up["url"], "the upload link"), content=trace.read_bytes())
             if r.status_code >= 400:
                 raise accounts.Error(f"upload refused: {r.text.strip() or r.status_code}")
         say(f"uploaded {trace.name} ({trace.stat().st_size:,} bytes)")
@@ -100,7 +100,7 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
                 if not path:
                     continue
                 link = await tool("pull_trace", {"trace_path": path})
-                r = h.get(link["url"])
+                r = h.get(config.check_url(link["url"], "the download link"))
                 if r.status_code >= 400:
                     raise accounts.Error(f"download refused: {r.text.strip() or r.status_code}")
                 dest.write_bytes(r.content)
@@ -108,16 +108,33 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
         return {"task": task, "output": str(out), "report": find(task, "report"), "twins": find(task, "twin_table")}
 
 
+def _refusal(e: BaseException) -> config.Error | None:
+    """The first CLI error inside a (possibly nested) exception group."""
+    if isinstance(e, config.Error):
+        return e
+    for inner in getattr(e, "exceptions", ()):
+        found = _refusal(inner)
+        if found is not None:
+            return found
+    return None
+
+
 def anonymize(trace: Path, out: Path | None = None, api_key: str | None = None, key_hex: str = "",
               confidential: list[str] | None = None, say: Callable[[str], None] = print) -> dict[str, Any]:
     key = config.api_key(api_key)
     if not key:
-        raise accounts.Error("no key: set METAPHI_API_KEY, pass --api-key, or run `metaphi keys create`")
+        raise accounts.Error("no key: set METAPHI_API_KEY, or run `metaphi login --with-api-key` or `metaphi keys create`")
     if not trace.is_file():
         raise accounts.Error(f"no file {trace}")
     out = out or trace.with_name(f"{trace.stem}.anonymized{trace.suffix}")
-    token = accounts.token_for(key, config.KENNET)
+    token = accounts.token_for(key, config.kennet_url())
     started = time.time()
-    got = anyio.run(_run, token, trace, out, key_hex, list(confidential or []), say)
+    try:
+        got = anyio.run(_run, token, trace, out, key_hex, list(confidential or []), say)
+    except Exception as e:  # the MCP client's task groups wrap a refusal; say the refusal, not the traceback
+        refusal = _refusal(e)
+        if refusal is None:
+            raise
+        raise refusal from None
     say(f"done in {time.time() - started:.0f}s")
     return got
