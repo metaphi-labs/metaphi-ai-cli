@@ -1,6 +1,6 @@
-"""Anonymize a trace: upload it, run the anonymizer, download the twin. One file in, one file out, same format.
+"""Twin a trace: upload it, run the twinner, download the twin. One file in, one file out, same format.
 
-The anonymizer is served over MCP (the tools upload_trace, anonymize_trace, get_task, pull_trace); this is a
+The twinner is served over MCP (the tools upload_trace, twin_trace, get_task, pull_trace); this is a
 client of those tools, authenticated by an organization key exchanged for an hour-long token."""
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def find(value: Any, key: str) -> Any:
 
 
 def connect(token: str) -> Any:
-    """The anonymizer's MCP endpoint, as the key's token."""
+    """The twinner's MCP endpoint, as the key's token."""
     import httpx2
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
@@ -78,9 +78,9 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
             args["key"] = key_hex
         if confidential:
             args["confidential"] = confidential
-        handle = await tool("anonymize_trace", args)
+        handle = await tool("twin_trace", args)
         task_id, wait = handle["task_id"], handle.get("poll_interval_ms", 5000) / 1000
-        say(f"anonymizing (task {task_id})")
+        say(f"twinning (task {task_id})")
         last = ""
         while True:
             await anyio.sleep(wait)
@@ -94,7 +94,7 @@ async def _run(token: str, trace: Path, out: Path, key_hex: str, confidential: l
                 break
         output = find(task, "output_path")
         if status != "completed" or not output:
-            raise accounts.Error(f"anonymization {status}: {find(task, 'error') or message or status}")
+            raise accounts.Error(f"twinning {status}: {find(task, 'error') or message or status}")
         link = await tool("pull_trace", {"trace_path": output})
         with httpx.Client(timeout=600.0) as h:
             r = h.get(config.check_url(link["url"], "the download link"))
@@ -116,14 +116,14 @@ def _refusal(e: BaseException) -> config.Error | None:
     return None
 
 
-def anonymize(trace: Path, out: Path | None = None, api_key: str | None = None, key_hex: str = "",
+def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_hex: str = "",
               confidential: list[str] | None = None, say: Callable[[str], None] = print) -> dict[str, Any]:
     key = config.api_key(api_key)
     if not key:
         raise accounts.Error("no key: set METAPHI_API_KEY, or run `metaphi login --with-api-key` or `metaphi keys create`")
     if not trace.is_file():
         raise accounts.Error(f"no file {trace}")
-    out = out or trace.with_name(f"{trace.stem}.anonymized{trace.suffix}")
+    out = out or trace.with_name(f"{trace.stem}.twin{trace.suffix}")
     token = accounts.token_for(key, config.kennet_url())
     started = time.time()
     try:

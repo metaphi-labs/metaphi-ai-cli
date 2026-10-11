@@ -1,4 +1,4 @@
-"""The CLI against stand-ins for accounts and the anonymizer: sign-in, keys, and one trace end to end."""
+"""The CLI against stand-ins for accounts and the twinner: sign-in, keys, and one trace end to end."""
 import json
 
 import httpx
@@ -6,7 +6,7 @@ import pytest
 import respx
 from mcp.server.mcpserver import MCPServer
 
-from metaphi import accounts, anonymize, cli, config
+from metaphi import accounts, cli, config, twin
 
 A = config.DEFAULT_ACCOUNTS
 
@@ -42,12 +42,12 @@ def test_login_polls_the_device_grant_until_approved_and_keeps_the_token(home):
 @respx.mock
 def test_keys_create_shows_the_key_once_on_the_only_org(capsys):
     config.save({"token": "tok"})
-    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["kennet:anonymize"],
+    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["kennet:twin"],
                                                "members": {}, "keys": []}])
     made = respx.post(f"{A}/keys/orgs/acme").respond(json={"id": "key_1", "name": "prod", "key": "mai_sk_x",
-                                                           "scopes": ["kennet:anonymize"]})
+                                                           "scopes": ["kennet:twin"]})
     assert cli.main(["keys", "create", "prod"]) == 0
-    assert json.loads(made.calls[0].request.content) == {"name": "prod", "scopes": ["kennet:anonymize"]}
+    assert json.loads(made.calls[0].request.content) == {"name": "prod", "scopes": ["kennet:twin"]}
     assert made.calls[0].request.headers["authorization"] == "Bearer tok"
     assert "mai_sk_x" in capsys.readouterr().out and "api_key" not in config.load()
 
@@ -63,7 +63,7 @@ def test_a_refusal_is_the_servers_sentence(capsys):
     assert cli.main(["keys", "list", "--org", "other"]) == 1
 
 
-def _anonymizer(seen):
+def _twinner(seen):
     m = MCPServer("stand-in")
 
     @m.tool()
@@ -72,7 +72,7 @@ def _anonymizer(seen):
         return {"url": "https://files.metaphi.ai/up", "upload_id": "u" * 24, "expires_at": 0, "command": ""}
 
     @m.tool()
-    def anonymize_trace(upload_id: str, key: str = "", confidential: list[str] | None = None) -> dict:
+    def twin_trace(upload_id: str, key: str = "", confidential: list[str] | None = None) -> dict:
         seen["args"] = {"upload_id": upload_id, "key": key, "confidential": confidential}
         return {"task_id": "t1", "status": "working", "poll_interval_ms": 1}
 
@@ -93,7 +93,7 @@ def _anonymizer(seen):
 
 
 @respx.mock
-def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
+def test_twin_uploads_runs_and_downloads(home, monkeypatch, capsys):
     from mcp import Client
     trace = home / "trace.json"
     trace.write_text('{"user": "Alice"}')
@@ -101,16 +101,16 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     token = respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
     put = respx.put("https://files.metaphi.ai/up").respond(200)
     respx.get("https://files.metaphi.ai/k/u/r/trace.json").respond(content=b'{"user": "Morgan"}')
-    monkeypatch.setattr(anonymize, "connect", lambda tok: seen.update(token=tok) or Client(_anonymizer(seen)))
+    monkeypatch.setattr(twin, "connect", lambda tok: seen.update(token=tok) or Client(_twinner(seen)))
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
-    assert cli.main(["anonymize", str(trace), "--confidential", "Acme", "--json"]) == 0
+    assert cli.main(["twin", str(trace), "--confidential", "Acme", "--json"]) == 0
     form = token.calls[0].request.content.decode()
     assert "client_credentials" in form and "mai_sk_live" in form and seen["token"] == "jwt"
     assert put.calls[0].request.content == b'{"user": "Alice"}' and seen["filename"] == "trace.json"
     assert seen["args"] == {"upload_id": "u" * 24, "key": "", "confidential": ["Acme"]}
-    assert (home / "trace.anonymized.json").read_text() == '{"user": "Morgan"}'
-    assert sorted(p.name for p in home.iterdir() if p.is_file()) == ["trace.anonymized.json", "trace.json"]
-    assert json.loads(capsys.readouterr().out) == {"output": str(home / "trace.anonymized.json")}
+    assert (home / "trace.twin.json").read_text() == '{"user": "Morgan"}'
+    assert sorted(p.name for p in home.iterdir() if p.is_file()) == ["trace.json", "trace.twin.json"]
+    assert json.loads(capsys.readouterr().out) == {"output": str(home / "trace.twin.json")}
 
 
 def test_a_failed_run_says_why_and_writes_nothing(home, monkeypatch, capsys):
@@ -120,16 +120,16 @@ def test_a_failed_run_says_why_and_writes_nothing(home, monkeypatch, capsys):
     with respx.mock:
         respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
         respx.put("https://files.metaphi.ai/up").respond(200)
-        monkeypatch.setattr(anonymize, "connect", lambda tok: Client(_anonymizer(seen)))
+        monkeypatch.setattr(twin, "connect", lambda tok: Client(_twinner(seen)))
         monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
-        assert cli.main(["anonymize", str(home / "trace.json")]) == 1
+        assert cli.main(["twin", str(home / "trace.json")]) == 1
     assert "the twin still held an original value" in capsys.readouterr().err
     assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
 
 
-def test_anonymize_without_a_key_says_how_to_get_one(home, capsys):
+def test_twin_without_a_key_says_how_to_get_one(home, capsys):
     (home / "t.json").write_text("{}")
-    assert cli.main(["anonymize", str(home / "t.json")]) == 1
+    assert cli.main(["twin", str(home / "t.json")]) == 1
     assert "METAPHI_API_KEY" in capsys.readouterr().err
 
 
