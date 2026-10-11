@@ -1,12 +1,13 @@
 """The CLI against stand-ins for accounts and the twinner: sign-in, keys, and one trace end to end."""
 import json
+from typing import Any
 
 import httpx
 import pytest
 import respx
 from mcp.server.mcpserver import MCPServer
 
-from metaphi import accounts, cli, config, twin
+from metaphi import accounts, cli, config, errors, twin
 
 A = config.DEFAULT_ACCOUNTS
 
@@ -72,8 +73,10 @@ def _twinner(seen):
         return {"url": "https://files.metaphi.ai/up", "upload_id": "u" * 24, "expires_at": 0, "command": ""}
 
     @m.tool()
-    def twin_trace(upload_id: str, key: str = "", confidential: list[str] | None = None) -> dict:
+    def twin_trace(upload_id: str, key: str = "", confidential: list[str] | None = None) -> Any:
         seen["args"] = {"upload_id": upload_id, "key": key, "confidential": confidential}
+        if "refusal" in seen:
+            return seen["refusal"]
         return {"task_id": "t1", "status": "working", "poll_interval_ms": 1}
 
     @m.tool()
@@ -125,6 +128,74 @@ def test_a_failed_run_says_why_and_writes_nothing(home, monkeypatch, capsys):
         assert cli.main(["twin", str(home / "trace.json")]) == 1
     assert "the twin still held an original value" in capsys.readouterr().err
     assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
+
+
+OUT_OF_CREDIT = {"type": "billing_error", "code": "out_of_credit", "retryable": False, "request_id": "req_1",
+                 "message": "This organization's prepaid balance is used up; add credits to continue."}
+
+
+def _refused(error: dict) -> Any:
+    from mcp.types import CallToolResult, TextContent
+    return CallToolResult(content=[TextContent(type="text", text=error["message"])],
+                          structured_content={"error": error}, is_error=True)
+
+
+def _twin(home, monkeypatch, seen, *argv, run=None) -> Any:
+    """`metaphi twin` against the stand-in, or `run()` in its place."""
+    from mcp import Client
+    (home / "trace.json").write_text("{}")
+    with respx.mock:
+        respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
+        respx.put("https://files.metaphi.ai/up").respond(200)
+        monkeypatch.setattr(twin, "connect", lambda tok: Client(_twinner(seen)))
+        monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+        return run() if run else cli.main(["twin", str(home / "trace.json"), *argv])
+
+
+def test_a_refusal_raises_its_type_and_keeps_its_code(home, monkeypatch, capsys):
+    seen = {"refusal": _refused(OUT_OF_CREDIT)}
+    assert _twin(home, monkeypatch, seen) == 1
+    err = capsys.readouterr().err
+    assert err.endswith(f"error: {OUT_OF_CREDIT['message']} (code: out_of_credit, request: req_1)\n")
+
+    def run():
+        with pytest.raises(errors.BillingError) as e:
+            twin.twin(home / "trace.json", say=lambda s: None)
+        return e.value
+
+    got = _twin(home, monkeypatch, seen, run=run)
+    assert (got.code, got.request_id, got.retryable) == ("out_of_credit", "req_1", False)
+    assert isinstance(got, errors.MetaphiError) and isinstance(got, config.Error)
+
+
+def test_json_puts_the_error_object_on_stdout(home, monkeypatch, capsys):
+    limited = {"type": "rate_limit_error", "code": "rate_limited_concurrent", "retryable": True,
+               "request_id": "req_2", "message": "3 runs are already going for this organization"}
+    assert _twin(home, monkeypatch, {"refusal": _refused(limited)}, "--json") == 1
+    assert json.loads(capsys.readouterr().out) == {"error": limited}
+
+
+def test_a_failed_run_raises_its_code_and_run_id(home, monkeypatch, capsys):
+    failed = {"type": "run_error", "code": "twin_unclean", "retryable": False, "request_id": "req_3",
+              "run_id": "r9", "message": "the twin did not come out clean; nothing was written or charged"}
+    seen = {"outcome": {"run_id": "r9", "status": "failed", "error": failed}}
+    assert _twin(home, monkeypatch, seen, "--json") == 1
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"error": failed}
+    assert "(code: twin_unclean, request: req_3)" in out.err
+    assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
+
+
+def test_an_uncoded_tool_error_is_a_plain_metaphi_error():
+    from mcp.types import CallToolResult, TextContent
+    with pytest.raises(errors.MetaphiError) as e:
+        twin._structured(CallToolResult(content=[TextContent(type="text", text="twin_trace needs L3")],
+                                        is_error=True))
+    assert type(e.value) is errors.MetaphiError and e.value.code is None and str(e.value) == "twin_trace needs L3"
+    got = errors.from_object({"type": "new_error", "code": "later", "message": "m"})
+    assert type(got) is errors.MetaphiError and got.code == "later" and got.type == "new_error"
+    assert type(errors.from_object({"type": "api_error", "code": "unavailable", "message": "m",
+                                    "retryable": True})) is errors.APIError
 
 
 def test_twin_without_a_key_says_how_to_get_one(home, capsys):
