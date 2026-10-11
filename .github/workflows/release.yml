@@ -1,10 +1,15 @@
 name: release
-# A tag v<version> publishes that version to PyPI by trusted publishing: no token is stored anywhere.
+# A tag v<version> ships that version three ways, as Stripe ships its CLI:
+#   pip install metaphi-ai                  PyPI, by trusted publishing (no token stored anywhere)
+#   brew install metaphi-labs/tap/metaphi   metaphi-labs/homebrew-tap writes its formula from this release
+#   a single binary per platform            attached to the GitHub release, no Python needed
 on:
   push:
     tags: ["v*"]
+permissions:
+  contents: read
 jobs:
-  publish:
+  pypi:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -16,3 +21,42 @@ jobs:
       - run: test "v$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
       - run: uv build
       - run: uv publish --trusted-publishing always
+
+  binary:
+    strategy:
+      matrix:
+        include:
+          - {os: macos-14, target: darwin-arm64}
+          - {os: macos-15-intel, target: darwin-x86_64}
+          - {os: ubuntu-24.04, target: linux-x86_64}
+          - {os: ubuntu-24.04-arm, target: linux-arm64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv venv --python 3.12 && uv pip install . pyinstaller
+      - run: >
+          uv run --no-project pyinstaller --log-level WARN --onefile --name metaphi
+          --collect-submodules mcp.client --collect-submodules mcp.shared --collect-submodules mcp_types
+          src/metaphi/__main__.py
+      - run: ./dist/metaphi --version
+      - run: |
+          tar -C dist -czf metaphi_${GITHUB_REF_NAME#v}_${{ matrix.target }}.tar.gz metaphi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: metaphi_*.tar.gz
+
+  github:
+    needs: [binary]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: sha256sum metaphi_*.tar.gz > checksums.txt
+      - run: gh release create "$GITHUB_REF_NAME" metaphi_*.tar.gz checksums.txt --repo "$GITHUB_REPOSITORY" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

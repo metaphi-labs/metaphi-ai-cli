@@ -1,6 +1,6 @@
 [project]
 name = "metaphi-ai"
-version = "0.1.0"
+version = "0.1.1"
 description = "The Metaphi AI command line: sign in, manage your organization's keys, anonymize traces."
 readme = "README.md"
 requires-python = ">=3.10"

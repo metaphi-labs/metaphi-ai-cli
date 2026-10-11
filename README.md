@@ -5,11 +5,14 @@ The Metaphi AI command line. Sign in, manage your organization's people and keys
 ## Install
 
 ```sh
-pip install metaphi-ai
-metaphi --version
+brew install metaphi-labs/tap/metaphi    # macOS and Linux
 ```
 
-Want the command isolated from your project's packages? `pipx install metaphi-ai` (or `uv tool install metaphi-ai`).
+No Homebrew? Download the binary for your platform from the
+[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), unpack it and put `metaphi` on your
+`PATH`. Each release lists its `checksums.txt`.
+
+Calling it from Python instead: `pip install metaphi-ai` gives you the same command and the library (see below).
 
 ## Quickstart (2 minutes)
 
