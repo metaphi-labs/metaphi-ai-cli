@@ -15,7 +15,10 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 CLIENT_ID = "metaphi-cli"
 
 
-class Error(Exception):
+MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the server says
+
+
+class Error(config.Error):
     """A refusal, in the server's own sentence."""
 
 
@@ -29,8 +32,19 @@ def _said(r: httpx.Response) -> str:
     return str(body)
 
 
+def _json(r: httpx.Response) -> dict[str, Any]:
+    """The body as a JSON object; anything else is the server's sentence as an error."""
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise Error(_said(r))
+    return body
+
+
 def _http() -> httpx.Client:
-    return httpx.Client(base_url=config.ACCOUNTS, timeout=30.0,
+    return httpx.Client(base_url=config.accounts_url(), timeout=30.0,
                         headers={"user-agent": f"metaphi-cli/{__import__('metaphi').__version__}"})
 
 
@@ -38,20 +52,32 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
           sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Sign the person in: show a code, open the browser on it, wait for the approval, keep the token."""
     with _http() as h:
-        r = h.post("/device/code", json={"client": CLIENT_ID})
+        r = h.post("/device/code", data={"client_id": CLIENT_ID})
         if r.status_code != 200:
             raise Error(_said(r))
-        code = r.json()
-        say(f"Your code is {code['user_code']}. Confirm it in the browser:\n  {code['verification_uri_complete']}")
+        code = _json(r)
+        if not all(isinstance(code.get(k), str) and code[k] for k in ("device_code", "user_code", "verification_uri")):
+            raise Error("the sign-in server sent an incomplete device code")
+        # RFC 8628 §3.3: the person types the code at verification_uri; verification_uri_complete is optional.
+        uri, complete = code["verification_uri"], code.get("verification_uri_complete")
+        config.check_url(uri, "the sign-in page")
+        say(f"Open {uri} and enter the code {code['user_code']}")
         if open_browser:
-            webbrowser.open(code["verification_uri_complete"])
-        interval, deadline = float(code.get("interval") or 3), time.time() + float(code.get("expires_in") or 600)
+            webbrowser.open(config.check_url(complete, "the sign-in page") if isinstance(complete, str) and complete
+                            else uri)
+        try:
+            interval = max(MIN_INTERVAL, float(code.get("interval") or MIN_INTERVAL))
+            deadline = time.time() + min(float(code.get("expires_in") or 600), 1800.0)
+        except (TypeError, ValueError):
+            raise Error("the sign-in server sent an unreadable device code") from None
         while time.time() < deadline:
             sleep(interval)
             r = h.post("/oauth/token", data={"grant_type": DEVICE_GRANT, "device_code": code["device_code"],
                                               "client_id": CLIENT_ID})
-            body = r.json()
+            body = _json(r)
             if r.status_code == 200:
+                if not isinstance(body.get("access_token"), str):
+                    raise Error("the sign-in server sent no access token")
                 cfg = config.load()
                 cfg.update({"token": body["access_token"], "email": body.get("email")})
                 config.save(cfg)
@@ -139,4 +165,7 @@ def token_for(key: str, resource: str) -> str:
                                           "resource": resource})
     if r.status_code != 200:
         raise Error(_said(r))
-    return r.json()["access_token"]
+    token = _json(r).get("access_token")
+    if not isinstance(token, str):
+        raise Error("the sign-in server sent no access token")
+    return token

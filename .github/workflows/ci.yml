@@ -3,12 +3,110 @@ on:
   pull_request:
   push:
     branches: [main]
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
-      - run: uv venv --python 3.12 && uv pip install -e ".[dev]"
-      - run: uv run --no-project pytest -q
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv run --frozen pytest -q
       - run: uvx ruff@0.16.6 check .
+      - name: build the sdist and wheel; only the package may ship
+        run: |
+          uv build
+          bad=$( (tar tzf dist/*.tar.gz; unzip -Z1 dist/*.whl) | grep -E '(^|/)(tests|\.github)/' || true)
+          if [ -n "$bad" ]; then echo "::error::the distributions carry files that must not ship:"; echo "$bad"; exit 1; fi
+
+  binary:
+    # The release's one-file build, on a PR: it must start and find a real keychain backend.
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - run: uv sync --frozen --no-dev --group release --python 3.12
+      - name: pyinstaller (as release.yml)
+        run: |
+          extra=()
+          if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
+          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name metaphi \
+            --collect-submodules mcp.client --collect-submodules mcp.shared --collect-submodules mcp_types \
+            --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
+            src/metaphi/__main__.py
+      - run: ./dist/metaphi --version
+      - name: the binary loads a real keychain backend
+        run: |
+          got=$(./dist/metaphi --debug-keyring)
+          echo "$got"
+          if [ "$RUNNER_OS" = macOS ]; then
+            case "$got" in *keyring.backends.macOS*) ;; *) echo "::error::no macOS Keychain backend in the binary"; exit 1;; esac
+          fi
+
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: |
+          curl -fsSLo actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar xzf actionlint.tgz actionlint && ./actionlint -color
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - name: zizmor
+        run: uvx zizmor@1.30.1 --offline --format plain .github/workflows
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks over the full history
+        run: |
+          curl -fsSLo gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum -c -
+          tar xzf gitleaks.tgz gitleaks && ./gitleaks git --redact --no-banner --log-opts="--all" .
+      - name: denylist (patterns held in a secret, never printed)
+        env:
+          DENYLIST_PATTERNS: ${{ secrets.DENYLIST_PATTERNS }}
+        run: |
+          if [ -z "$DENYLIST_PATTERNS" ]; then
+            echo "::notice::DENYLIST_PATTERNS is not set for this run; denylist check skipped"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$DENYLIST_PATTERNS" | sed '/^[[:space:]]*$/d' > "$RUNNER_TEMP/deny"
+          found=0
+          # Tracked files: names only, never the matching line.
+          if files=$(git grep -l -I -i -E -f "$RUNNER_TEMP/deny"); then
+            echo "::error::denylisted text in tracked files:"; echo "$files"; found=1
+          fi
+          # Every commit reachable from any ref: message, author and patch; commit ids only.
+          for c in $(git rev-list --all); do
+            if git show --format=fuller "$c" | grep -q -I -i -E -f "$RUNNER_TEMP/deny"; then
+              echo "::error::denylisted text in commit $c"; found=1
+            fi
+          done
+          rm -f "$RUNNER_TEMP/deny"
+          exit $found

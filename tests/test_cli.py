@@ -8,26 +8,32 @@ from mcp.server.mcpserver import MCPServer
 
 from metaphi import accounts, anonymize, cli, config
 
-A = config.ACCOUNTS
+A = config.DEFAULT_ACCOUNTS
 
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("METAPHI_HOME", str(tmp_path / "cfg"))
-    monkeypatch.delenv("METAPHI_API_KEY", raising=False)
+    monkeypatch.setenv("METAPHI_NO_KEYRING", "1")
+    for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_KENNET", "METAPHI_ALLOW_CUSTOM_HOST"):
+        monkeypatch.delenv(var, raising=False)
     return tmp_path
 
 
 @respx.mock
 def test_login_polls_the_device_grant_until_approved_and_keeps_the_token(home):
-    respx.post(f"{A}/device/code").respond(json={"device_code": "dc", "user_code": "ABCD-EFGH", "interval": 0,
-                                                 "expires_in": 60, "verification_uri_complete": f"{A}/device?x"})
+    code = respx.post(f"{A}/device/code").respond(json={"device_code": "dc", "user_code": "ABCD-EFGH", "interval": 0,
+                                                 "expires_in": 60, "verification_uri": f"{A}/device",
+                                                 "verification_uri_complete": f"{A}/device?x"})
     polls = respx.post(f"{A}/oauth/token").mock(side_effect=[
         httpx.Response(400, json={"error": "authorization_pending"}),
         httpx.Response(200, json={"access_token": "tok", "token_type": "Bearer", "email": "alice@example.test"})])
-    said = []
-    got = accounts.login(say=said.append, open_browser=False, sleep=lambda s: None)
+    said, slept = [], []
+    got = accounts.login(say=said.append, open_browser=False, sleep=slept.append)
     assert got["email"] == "alice@example.test" and "ABCD-EFGH" in said[0]
+    assert code.calls[0].request.headers["content-type"] == "application/x-www-form-urlencoded"
+    assert code.calls[0].request.content == b"client_id=metaphi-cli"
+    assert slept == [5.0, 5.0]  # RFC 8628: never faster than 5 s, whatever the server says
     body = dict(x.split("=") for x in polls.calls[0].request.content.decode().split("&"))
     assert body["device_code"] == "dc" and body["client_id"] == "metaphi-cli"
     assert config.load()["token"] == "tok" and oct(config.path().stat().st_mode)[-3:] == "600"
@@ -63,7 +69,7 @@ def _anonymizer(seen):
     @m.tool()
     def upload_trace(filename: str) -> dict:
         seen["filename"] = filename
-        return {"url": "https://files.test/up", "upload_id": "u" * 24, "expires_at": 0, "command": ""}
+        return {"url": "https://files.metaphi.ai/up", "upload_id": "u" * 24, "expires_at": 0, "command": ""}
 
     @m.tool()
     def anonymize_trace(upload_id: str, key: str = "", confidential: list[str] | None = None) -> dict:
@@ -76,12 +82,11 @@ def _anonymizer(seen):
         if seen["polls"] < 2:
             return {"taskId": task_id, "status": "working", "statusMessage": "reading"}
         return {"taskId": task_id, "status": "completed", "result": {"structuredContent": {"calls": [
-            {"outcome": {"report": {"entities": 3}, "twin_table": {"Alice": "Morgan"},
-                         "output_path": "k/u/r/trace.json", "report_path": "k/u/r/report.json"}}]}}}
+            {"outcome": {"output_path": "k/u/r/trace.json"}}]}}}
 
     @m.tool()
     def pull_trace(trace_path: str) -> dict:
-        return {"url": f"https://files.test/{trace_path}", "expires_at": 0, "command": ""}
+        return {"url": f"https://files.metaphi.ai/{trace_path}", "expires_at": 0, "command": ""}
 
     return m
 
@@ -93,9 +98,8 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     trace.write_text('{"user": "Alice"}')
     seen = {}
     token = respx.post(f"{A}/oauth/token").respond(json={"access_token": "jwt", "token_type": "Bearer"})
-    put = respx.put("https://files.test/up").respond(200)
-    respx.get("https://files.test/k/u/r/trace.json").respond(content=b'{"user": "Morgan"}')
-    respx.get("https://files.test/k/u/r/report.json").respond(json={"entities": 3})
+    put = respx.put("https://files.metaphi.ai/up").respond(200)
+    respx.get("https://files.metaphi.ai/k/u/r/trace.json").respond(content=b'{"user": "Morgan"}')
     monkeypatch.setattr(anonymize, "connect", lambda tok: seen.update(token=tok) or Client(_anonymizer(seen)))
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
     assert cli.main(["anonymize", str(trace), "--confidential", "Acme", "--json"]) == 0
@@ -104,8 +108,8 @@ def test_anonymize_uploads_runs_and_downloads(home, monkeypatch, capsys):
     assert put.calls[0].request.content == b'{"user": "Alice"}' and seen["filename"] == "trace.json"
     assert seen["args"] == {"upload_id": "u" * 24, "key": "", "confidential": ["Acme"]}
     assert (home / "trace.anonymized.json").read_text() == '{"user": "Morgan"}'
-    assert json.loads((home / "trace.anonymized.report.json").read_text()) == {"entities": 3}
-    assert json.loads(capsys.readouterr().out)["twins"] == {"Alice": "Morgan"}
+    assert sorted(p.name for p in home.iterdir() if p.is_file()) == ["trace.anonymized.json", "trace.json"]
+    assert json.loads(capsys.readouterr().out) == {"output": str(home / "trace.anonymized.json")}
 
 
 def test_anonymize_without_a_key_says_how_to_get_one(home, capsys):
