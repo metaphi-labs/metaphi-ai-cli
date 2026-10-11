@@ -5,9 +5,11 @@ The Metaphi AI command line. Sign in, manage your organization's people and keys
 ## Install
 
 ```sh
-uv tool install metaphi-ai     # or: pipx install metaphi-ai
+pip install metaphi-ai
 metaphi --version
 ```
+
+Want the command isolated from your project's packages? `pipx install metaphi-ai` (or `uv tool install metaphi-ai`).
 
 ## Quickstart (2 minutes)
 
