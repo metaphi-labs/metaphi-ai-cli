@@ -81,6 +81,15 @@ def test_logout_clears_the_token_and_both_keys():
     assert out.calls[0].request.headers["authorization"] == "Bearer tok" and config.load() == {}
 
 
+def test_bare_metaphi_prints_the_help_and_the_next_step(capsys):
+    assert cli.main([]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("usage: metaphi") and out.splitlines()[-1] == "Get started: metaphi login"
+    config.save({"token": "tok", "api_key": "mai_sk_live"})
+    assert cli.main([]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "Next: metaphi twin <file>"
+
+
 @pytest.mark.parametrize("command", ["keys", "members"])
 def test_keys_and_members_are_not_commands(command, capsys):
     with pytest.raises(SystemExit):

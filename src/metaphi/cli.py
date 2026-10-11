@@ -123,7 +123,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="metaphi", description="The Metaphi AI command line.")
     p.add_argument("--version", action="version", version=f"metaphi {__version__}")
     p.add_argument("--debug-keyring", nargs=0, action=_DebugKeyring, help=argparse.SUPPRESS)
-    sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
+    sub = p.add_subparsers(dest="command", metavar="<command>")
 
     s = sub.add_parser("login", help="sign in through the browser and save your organization's keys (or save a key "
                        "you have with --with-api-key)")
@@ -162,8 +162,13 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    a = parser().parse_args(argv)
+    p = parser()
+    a = p.parse_args(argv)
     try:
+        if a.command is None:  # bare `metaphi`: the help, and the one next step
+            p.print_help()
+            print("\nNext: metaphi twin <file>" if config.api_key() else "\nGet started: metaphi login")
+            return 0
         a.fn(a)
     except config.Error as e:
         # `error: <message> (code: <code>, request: <request id>)`; --json also puts the error object on stdout
