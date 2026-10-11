@@ -1,28 +1,54 @@
 name: release
 # A tag v<version> ships that version three ways, as Stripe ships its CLI:
-#   pip install metaphi-ai                  PyPI, by trusted publishing (no token stored anywhere)
+#   pip install metaphi-ai                  PyPI, by trusted publishing (no token stored anywhere), with PEP 740
+#                                           attestations
 #   brew install metaphi-labs/tap/metaphi   metaphi-labs/homebrew-tap writes its formula from this release
-#   a single binary per platform            attached to the GitHub release, no Python needed
+#   a single binary per platform            attached to the GitHub release with checksums.txt, each with a
+#                                           build provenance attestation (`gh attestation verify`)
+# Every action is pinned to a commit; every Python dependency, PyInstaller included, comes from uv.lock.
 on:
   push:
     tags: ["v*"]
 permissions:
   contents: read
 jobs:
-  pypi:
+  test:
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: read
-      id-token: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
       - run: test "v$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv run --frozen pytest -q
+
+  build:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
       - run: uv build
-      - run: uv publish --trusted-publishing always
+      - name: only the package may ship
+        run: |
+          bad=$( (tar tzf dist/*.tar.gz; unzip -Z1 dist/*.whl) | grep -E '(^|/)(tests|\.github)/' || true)
+          if [ -n "$bad" ]; then echo "::error::the distributions carry files that must not ship:"; echo "$bad"; exit 1; fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
 
   binary:
+    needs: [test]
     strategy:
       matrix:
         include:
@@ -32,31 +58,61 @@ jobs:
           - {os: ubuntu-24.04-arm, target: linux-arm64}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
-      - run: uv venv --python 3.12 && uv pip install . pyinstaller
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - run: uv sync --frozen --no-dev --group release --python 3.12
       - run: >
-          uv run --no-project pyinstaller --log-level WARN --onefile --name metaphi
+          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name metaphi
           --collect-submodules mcp.client --collect-submodules mcp.shared --collect-submodules mcp_types
           src/metaphi/__main__.py
       - run: ./dist/metaphi --version
-      - run: |
-          tar -C dist -czf metaphi_${GITHUB_REF_NAME#v}_${{ matrix.target }}.tar.gz metaphi
-      - uses: actions/upload-artifact@v4
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          tar -C dist -czf "metaphi_${GITHUB_REF_NAME#v}_${TARGET}.tar.gz" metaphi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
           path: metaphi_*.tar.gz
 
+  pypi:
+    needs: [test, build, binary]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          attestations: true
+
   github:
-    needs: [binary]
+    needs: [binary, pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: "*-*"
           merge-multiple: true
       - run: sha256sum metaphi_*.tar.gz > checksums.txt
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            metaphi_*.tar.gz
+            checksums.txt
       - run: gh release create "$GITHUB_REF_NAME" metaphi_*.tar.gz checksums.txt --repo "$GITHUB_REPOSITORY" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

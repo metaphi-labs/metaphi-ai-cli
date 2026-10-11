@@ -1,11 +1,11 @@
 [project]
 name = "metaphi-ai"
-version = "0.1.1"
+version = "0.1.2"
 description = "The Metaphi AI command line: sign in, manage your organization's keys, anonymize traces."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-dependencies = ["httpx>=0.28", "mcp>=2.3"]
+dependencies = ["httpx>=0.28", "mcp>=2.3", "keyring>=25.7"]
 
 [project.scripts]
 metaphi = "metaphi.cli:main"
@@ -14,7 +14,7 @@ metaphi = "metaphi.cli:main"
 dev = ["pytest>=8", "respx>=0.22"]
 
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.ruff]
@@ -22,3 +22,14 @@ line-length = 120
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/metaphi"]
+
+# The sdist carries the package and nothing else: no tests, no workflows, no fixtures.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "README.md", "pyproject.toml", "LICENSE"]
+
+# What the release builds the single binaries with, locked in uv.lock like everything else.
+[dependency-groups]
+release = ["pyinstaller==6.22.3"]
+
+[tool.uv.dependency-groups]
+release = {requires-python = ">=3.10,<3.16"}
