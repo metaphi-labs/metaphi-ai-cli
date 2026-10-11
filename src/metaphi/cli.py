@@ -129,11 +129,21 @@ def cmd_members_remove(a: argparse.Namespace) -> None:
     print(f"{a.email} removed from {o['id']}.")
 
 
+def _seconds(said: str) -> float:
+    try:
+        got = float(said)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{said!r} is not a number of seconds") from None
+    if got <= 0:
+        raise argparse.ArgumentTypeError("a number of seconds above zero")
+    return got
+
+
 def cmd_twin(a: argparse.Namespace) -> None:
     from metaphi.twin import twin
     say = (lambda s: print(s, file=sys.stderr)) if a.json else print
     got = twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
-                    a.confidential, say=say)
+               a.confidential, say=say, deadline_s=a.timeout)
     if a.json:
         print(json.dumps({"output": got["output"]}, indent=2))
 
@@ -230,6 +240,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
     s.add_argument("--api-key", action=_OnArgv, help="deprecated: set METAPHI_API_KEY instead")
     s.add_argument("--json", action="store_true", help="print the result as JSON on stdout")
+    s.add_argument("--timeout", type=_seconds, help="seconds to wait for the twin (default METAPHI_TWIN_TIMEOUT, or "
+                   "7200)")
     s.set_defaults(fn=cmd_twin)
     return p
 

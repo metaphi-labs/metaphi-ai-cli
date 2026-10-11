@@ -270,3 +270,45 @@ def test_a_billing_member_is_added_by_role():
     put = respx.put(f"{A}/keys/orgs/acme/members/pay@acme.test").respond(json={})
     assert cli.main(["members", "add", "pay@acme.test", "--role", "billing"]) == 0
     assert json.loads(put.calls[0].request.content) == {"role": "billing"}
+
+
+@respx.mock
+def test_polling_stops_at_its_deadline_naming_the_twin(home, monkeypatch):
+    _api(statuses=("running",) * 50)
+    (home / "trace.json").write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    now = [0.0]
+
+    def sleep(s):
+        now[0] += s
+    with pytest.raises(errors.APIError) as e:
+        twin.twin(home / "trace.json", say=lambda s: None, sleep=sleep, deadline_s=30, clock=lambda: now[0])
+    assert e.value.code == "timed_out" and e.value.retryable and e.value.run_id == "twin_t1"
+    assert now[0] <= 30
+    assert not (home / "trace.twin.json").exists()
+    monkeypatch.setenv("METAPHI_TWIN_TIMEOUT", "90")
+    assert twin.deadline() == 90
+    monkeypatch.setenv("METAPHI_TWIN_TIMEOUT", "soon")
+    with pytest.raises(config.Error):
+        twin.deadline()
+    monkeypatch.delenv("METAPHI_TWIN_TIMEOUT")
+    assert twin.deadline() == twin.DEADLINE_S == 7200
+
+
+@respx.mock
+def test_the_output_is_synced_before_it_takes_its_name(home, monkeypatch):
+    _api(statuses=("completed",))
+    (home / "trace.json").write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    order = []
+    sync, replace = twin.os.fsync, twin.os.replace
+    monkeypatch.setattr(twin.os, "fsync", lambda fd: order.append("fsync") or sync(fd))
+    monkeypatch.setattr(twin.os, "replace", lambda a, b: order.append("replace") or replace(a, b))
+    twin.twin(home / "trace.json", home / "out.json", say=lambda s: None, sleep=lambda s: None)
+    assert order[:2] == ["fsync", "replace"]
+
+
+def test_twin_timeout_flag_is_seconds_above_zero(home, monkeypatch, capsys):
+    (home / "trace.json").write_text("{}")
+    with pytest.raises(SystemExit):
+        cli.main(["twin", str(home / "trace.json"), "--timeout", "0"])

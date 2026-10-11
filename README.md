@@ -145,6 +145,7 @@ Only owners and billing members can buy.
 | `METAPHI_API_KEY` | the key saved by `metaphi login --with-api-key` or `keys create --save` |
 | `METAPHI_API` | `https://api.metaphi.ai/v1/kennet`, the Kennet API |
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
+| `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `metaphi twin` waits for its twin to end (`--timeout` per call) |
 | `METAPHI_NO_KEYRING` | unset: secrets go to the OS keychain when one is available; `1` keeps them in the config file |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
 

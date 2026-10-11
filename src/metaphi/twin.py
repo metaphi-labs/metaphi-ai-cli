@@ -2,7 +2,8 @@
 
 A client of the Kennet API (METAPHI_API, default https://api.metaphi.ai/v1/kennet), authenticated by the organization
 key as a bearer, at the API version it was written for (Metaphi-Version): POST /twins with the file, GET /twins/{id}
-until it ends (backing off), GET its content. The upload
+until it ends (backing off, for at most `deadline_s`: METAPHI_TWIN_TIMEOUT or `--timeout`, default two hours), GET
+its content, written whole and synced before it takes the output's name. The upload
 carries an Idempotency-Key drawn once per call, so a retry after a dropped connection or a 5xx never starts a second
 run. Every refusal or failed run raises the typed error the API said (metaphi.errors), its code and request id kept."""
 from __future__ import annotations
@@ -24,6 +25,7 @@ FIRST_WAIT_S = 1.0          # the first poll's wait; each next one 1.5 times lon
 MAX_WAIT_S = 15.0
 MAX_RETRY_AFTER_S = 120.0
 API_VERSION = "2026-10-11"  # the API version this client speaks
+DEADLINE_S = 2 * 3600.0     # longest a call waits for its twin to end, unless told otherwise
 
 
 def _error(r: httpx.Response) -> errors.MetaphiError:
@@ -86,7 +88,10 @@ def _download(h: httpx.Client, twin_id: str, out: Path, sleep: Callable[[float],
                 else:
                     with open(tmp, "wb") as f:
                         f.writelines(r.iter_bytes())
+                        f.flush()
+                        os.fsync(f.fileno())
                     os.replace(tmp, out)
+                    _sync_dir(out.parent)
                     return
         except httpx.TransportError as e:
             tmp.unlink(missing_ok=True)
@@ -98,10 +103,38 @@ def _download(h: httpx.Client, twin_id: str, out: Path, sleep: Callable[[float],
         sleep(_wait(None, attempt))
 
 
+def _sync_dir(d: Path) -> None:
+    """The rename itself on disk, where the system lets a directory be synced."""
+    try:
+        fd = os.open(d, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def deadline() -> float:
+    """Seconds a call waits for its twin: METAPHI_TWIN_TIMEOUT, else DEADLINE_S."""
+    said = os.environ.get("METAPHI_TWIN_TIMEOUT", "").strip()
+    try:
+        got = float(said) if said else DEADLINE_S
+    except ValueError:
+        raise accounts.Error(f"METAPHI_TWIN_TIMEOUT is {said!r}; it is a number of seconds") from None
+    if got <= 0:
+        raise accounts.Error("METAPHI_TWIN_TIMEOUT is a number of seconds above zero")
+    return got
+
+
 def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_hex: str = "",
          confidential: list[str] | None = None, say: Callable[[str], None] = print,
-         sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
-    """Twin one trace file into `out` (default <name>.twin<ext>); answers {"output", "id"}."""
+         sleep: Callable[[float], None] = time.sleep, deadline_s: float | None = None,
+         clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Twin one trace file into `out` (default <name>.twin<ext>); answers {"output", "id"}. Waiting past
+    `deadline_s` (default `deadline()`) raises a retryable APIError naming the twin, which goes on running."""
     key = config.api_key(api_key)
     if not key:
         raise accounts.Error("no key: set METAPHI_API_KEY, or run `metaphi login --with-api-key` or `metaphi keys create`")
@@ -111,6 +144,7 @@ def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_h
         raise accounts.Error(f"no file {trace}")
     out = out or trace.with_name(f"{trace.stem}.twin{trace.suffix}")
     started = time.time()
+    wait_s = deadline() if deadline_s is None else deadline_s
     form: dict[str, Any] = {"key": key_hex} if key_hex else {}
     if confidential:
         form["confidential"] = list(confidential)
@@ -121,8 +155,12 @@ def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_h
         say(f"uploaded {trace.name} ({len(body):,} bytes)")
         twin_id, status, wait = made["id"], made["status"], FIRST_WAIT_S
         say(f"twinning ({twin_id})")
-        last = status
+        last, until = status, clock() + wait_s
         while status not in ENDED:
+            if clock() + wait > until:
+                raise errors.APIError(f"{twin_id} did not end within {wait_s:.0f}s; it goes on: "
+                                      f"GET /twins/{twin_id} for it", code="timed_out", retryable=True,
+                                      run_id=twin_id)
             sleep(wait)
             wait = min(wait * 1.5, MAX_WAIT_S)
             made = _send(h, "GET", f"/twins/{twin_id}", sleep).json()
