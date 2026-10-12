@@ -295,8 +295,8 @@ def cmd_delivery_show(a: argparse.Namespace) -> None:
               f"grading up to {_most(tasks, 'verifier_timeout_s')} s"),
              *([f"  newer     {d['newer']}  (kennet delivery diff {d['id']} {d['newer']})"] if d.get("newer") else [])]
     if a.tasks:
-        lines += [f"  {t['name']}  {t['tree'][7:19]}  {len(t['images'])} images  {t.get('cpus', '?')} CPUs  "
-                  f"{t.get('memory_mb', '?')} MB  {t.get('agent_timeout_s', '?')} s" for t in tasks]
+        lines += [f"  {t['name']}  {t['tree'][7:19]}  {len(t['images'])} images  {_most([t], 'cpus')} CPUs  "
+                  f"{_most([t], 'memory_mb')} MB  {_most([t], 'agent_timeout_s')} s" for t in tasks]
     _out(a, d, *lines, f"Next: kennet delivery pull {d['id']}")
 
 
@@ -318,9 +318,11 @@ def cmd_delivery_verify(a: argparse.Namespace) -> int:
     got = delivery.verify(Path(a.dir))
     lines = []
     for t in got["differ"]:
-        files = ", ".join(f"{f['path']} ({f['state']})" for f in t["files"])
-        files = files or ("a file's mode differs; its bytes are as delivered" if t["modes_only"] else "")
-        lines.append(f"{t['state']:<8} {t['name']}" + (f": {files}" if files else ""))
+        lines.append(f"{t['state']:<8} {t['name']}"
+                     + (": a file's mode differs; its bytes are as delivered" if t["modes_only"] else ""))
+        lines += [f"  {f['state']:<8} {f['path']}" + "".join(
+            f"  {said} {f[k][:12]}" for k, said in (("delivered", "delivered"), ("here", "here")) if f.get(k))
+            for f in t["files"]]
     lines += [f"added    {name}  (not in the delivery)" for name in got["added"]]
     lines += [f"{got['sums']:<8} SHA256SUMS"] if got["sums"] != "as_delivered" else []
     lines.append(f"{got['id']}: {got['as_delivered']} of {got['tasks']} tasks as delivered")
@@ -592,8 +594,8 @@ def parser() -> argparse.ArgumentParser:
     _verify(verbs.add_parser("verify", help="check a pulled delivery against its lock: offline, exit 1 if it "
                                             "differs"))
     v = verbs.add_parser("diff", help="what changed between two versions, and whether a task's grading did")
-    v.add_argument("a", metavar="<name@version>")
-    v.add_argument("b", metavar="<name@version>")
+    v.add_argument("a", metavar="<from>", help="a delivery (<name@version>) or a pulled directory")
+    v.add_argument("b", metavar="<to>", help="a delivery (<name@version>) or a pulled directory")
     _json_flag(v)
     v.set_defaults(fn=cmd_delivery_diff)
     _pull(sub.add_parser("pull", help="the same as `delivery pull`"))

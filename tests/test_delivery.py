@@ -2,6 +2,7 @@
 import io
 import json
 import tarfile
+from pathlib import Path
 
 import httpx
 import pytest
@@ -115,12 +116,17 @@ def test_pull_fetches_what_differs_and_verify_checks_it_offline(home, capsys):
     (to / "tasks" / "stray").mkdir()
     code, got, _ = run(capsys, "delivery", "verify", "set-0.1.0")
     assert code == 1 and not got["ok"] and got["as_delivered"] == 1 and got["added"] == ["stray"]
-    assert got["differ"] == [{"name": "one", "state": "changed", "modes_only": False, "files": [
-        {"path": "notes.txt", "state": "added"}, {"path": "tests/test.sh", "state": "changed"}]}]
+    one = got["differ"][0]
+    assert got["differ"] == [one] and (one["name"], one["state"], one["modes_only"]) == ("one", "changed", False)
+    assert [(f["path"], f["state"]) for f in one["files"]] == [("notes.txt", "added"), ("tests/test.sh", "changed")]
+    added, changed = one["files"]
+    assert added["delivered"] is None and len(added["here"]) == 64     # both hashes: what came, what is there
+    assert len(changed["delivered"]) == 64 and changed["delivered"] != changed["here"]
     assert got["next_step"] == "kennet delivery pull set@0.1.0 --to set-0.1.0"
     assert cli.main(["verify", "set-0.1.0"]) == 1
     said = capsys.readouterr().out
-    assert "changed  one: notes.txt (added), tests/test.sh (changed)" in said
+    assert "changed  one\n  added    notes.txt  here " in said
+    assert f"  changed  tests/test.sh  delivered {changed['delivered'][:12]}  here {changed['here'][:12]}" in said
     assert "set@0.1.0: 1 of 2 tasks as delivered" in said
 
     # a mode is part of the tree: the bytes are as delivered, and the task is not
@@ -172,6 +178,9 @@ def test_refusals_name_the_next_command(home, capsys):
     code, got, _ = run(capsys, "pull", "set@0.1.1", "--to", "d")
     assert code == 1 and got["error"]["code"] == "directory_in_use"
     assert got["error"]["next_step"] == "kennet delivery pull set@0.1.1 --to set-0.1.1"
+    Path("a-file").write_text("x")                      # a path that is no directory is a refusal, not a crash
+    code, got, _ = run(capsys, "pull", "set@0.1.0", "--to", "a-file")
+    assert code == 1 and got["error"]["code"] == "directory_in_use"
 
 
 @respx.mock
@@ -186,6 +195,14 @@ def test_diff_says_whose_grading_changed(home, capsys):
         {"name": "one", "grading_changed": True, "images_changed": False, "files": ["tests/test.sh"]},
         {"name": "two", "grading_changed": False, "images_changed": False, "files": ["instruction.md"]}]
     assert got["grading_changed"] == ["one"]
+
+    # a pulled directory stands for its delivery on either side; two of them are compared with no call anywhere
+    assert run(capsys, "pull", "set@0.1.0")[0] == 0 and run(capsys, "pull", "set@0.1.1")[0] == 0
+    respx.reset()
+    code, offline, _ = run(capsys, "delivery", "diff", "set-0.1.0", "set-0.1.1")
+    assert code == 0 and offline == got
+    code, bad, _ = run(capsys, "delivery", "diff", "set-0.1.0", "nowhere/")
+    assert code == 1 and bad["error"]["code"] == "invalid_delivery"
 
 
 def test_a_chain_of_links_never_carries_a_file_out_of_the_task(home):
