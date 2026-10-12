@@ -330,6 +330,25 @@ def cmd_delivery_verify(a: argparse.Namespace) -> int:
     return 0 if got["ok"] else FAILED
 
 
+def _until(at: object) -> str:
+    return time.strftime("%H:%M", time.localtime(at)) if isinstance(at, (int, float)) else "?"
+
+
+def cmd_registry_login(a: argparse.Namespace) -> None:
+    from metaphi import delivery
+    got = delivery.registry_login(a.client)
+    got["next_step"] = "kennet delivery list"
+    _out(a, got, f"{got['client']} is signed in to {got['server']} until {_until(got['expires_at'])} (one hour).",
+         f"Your images: {got['repository']}/<image>@sha256:...  as each delivery's lock names them",
+         "Run this again when a pull is refused; nothing here is a stored key.")
+
+
+def cmd_registry_token(a: argparse.Namespace) -> None:
+    from metaphi import delivery
+    got = delivery.registry_token()
+    _out(a, got, got["token"])
+
+
 def cmd_delivery_diff(a: argparse.Namespace) -> None:
     from metaphi import delivery
     got = delivery.diff(a.a, a.b)
@@ -457,6 +476,7 @@ examples:
   kennet delivery list              the task sets your organization holds
   kennet pull eswe-mini@0.1.0       fetch one into ./eswe-mini-0.1.0; again, only what differs
   kennet verify ./eswe-mini-0.1.0   check it against its lock, offline
+  kennet registry login             sign docker in to pull its images, for an hour
 
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
   kennet skill install              teach Claude Code this CLI (once per machine)
@@ -598,6 +618,20 @@ def parser() -> argparse.ArgumentParser:
     v.add_argument("b", metavar="<to>", help="a delivery (<name@version>) or a pulled directory")
     _json_flag(v)
     v.set_defaults(fn=cmd_delivery_diff)
+    s = sub.add_parser("registry", help="your organization's image repository: sign a container client in for an "
+                                        "hour, or print the token")
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
+    verbs = s.add_subparsers(dest="registry_command", metavar="<command>")
+    v = verbs.add_parser("login", help="sign docker (or podman, nerdctl) in to pull your deliveries' images, "
+                                       "for an hour")
+    v.add_argument("--client", metavar="<name>", help="the client to sign in; default: the first of docker, "
+                                                      "podman, nerdctl found")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_registry_login)
+    v = verbs.add_parser("token", help="print the hour's token alone, for whatever else pulls your images "
+                                       "(--json: with its server, repository, username and expiry)")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_registry_token)
     _pull(sub.add_parser("pull", help="the same as `delivery pull`"))
     _verify(sub.add_parser("verify", help="the same as `delivery verify`"))
 

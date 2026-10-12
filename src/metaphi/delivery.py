@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tarfile
 import time
 import uuid
@@ -74,6 +75,44 @@ def held(sleep: Callable[[float], None] = time.sleep) -> list[dict[str, Any]]:
 def show(delivery: str, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """One delivery with its tasks."""
     return _get(f"/deliveries/{delivery}", sleep).json()
+
+
+# -- the registry: an hour's token for the organization's images -------------------------------------------------
+
+CLIENTS = ("docker", "podman", "nerdctl")   # what `registry login` signs in, the first one found
+
+
+def registry_token(sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """`{server, repository, username, token, expires_at}`: what pulls the organization's images for an hour.
+    Nothing here writes the token anywhere."""
+    with _client(_key(None, False)) as h:
+        try:
+            return _send(h, "POST", "/registry/token", sleep).json()
+        except errors.MetaphiError as e:
+            raise _named(e) from None
+
+
+def registry_login(client: str | None = None, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Sign a container client in to the organization's repository: the token goes to it on stdin, never on a
+    command line, and the answer does not carry it."""
+    found = shutil.which(client) if client else next((w for w in map(shutil.which, CLIENTS) if w), None)
+    if not found:
+        raise _need(f"no {client or ' / '.join(CLIENTS)} on this machine to sign in; `kennet registry token` "
+                    "prints the token for whatever pulls your images", "no_container_client",
+                    "kennet registry token")
+    got = registry_token(sleep)
+    try:
+        ran = subprocess.run([found, "login", got["server"], "--username", got["username"], "--password-stdin"],
+                             input=got["token"], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise _need(f"{Path(found).name} login did not finish ({type(e).__name__})", "registry_login_failed",
+                    "kennet registry token") from None
+    if ran.returncode:
+        said = (ran.stderr or ran.stdout).strip().splitlines()[-1:] or ["no reason given"]
+        raise _need(f"{Path(found).name} login to {got['server']} failed: {said[0]}", "registry_login_failed",
+                    "kennet registry token")
+    return {"server": got["server"], "repository": got["repository"], "client": Path(found).name,
+            "expires_at": got["expires_at"], "signed_in": True}
 
 
 # -- the tree, as the cut counts it ------------------------------------------------------------------------------
