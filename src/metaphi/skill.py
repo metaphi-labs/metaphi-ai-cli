@@ -207,7 +207,7 @@ kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "remo
   them, and puts back a task that was changed. `--dry-run` says what it would fetch. It deletes nothing it did
   not bring. A pull that stopped is finished by the same command.
 - The pulled directory is `delivery.lock.json`, `SHA256SUMS` and `tasks/<task>/`. The lock is the record: each
-  task's `tree` (the SHA-256 of its `sha256sum` lines) and its `images` by digest. `verify` reads that directory
+  task's `tree` (a SHA-256 over every file's hash, mode and path) and its `images` by digest. `verify` reads that directory
   and nothing else, so it works with no key and no network, on the training machine too. Run it before a run,
   and treat exit 1 as "these are not the tasks that were delivered": pull again before running.
 - Size the sandboxes from `show`: a task's `cpus`, `memory_mb`, `storage_mb`, `agent_timeout_s` and

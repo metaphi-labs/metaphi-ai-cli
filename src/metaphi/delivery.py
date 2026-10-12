@@ -32,6 +32,7 @@ from metaphi.twin import UPLOAD, _client, _error, _key, _retry_after, _send, _Tr
 
 LOCK, SUMS, TASKS = "delivery.lock.json", "SHA256SUMS", "tasks"
 AT_ONCE = 8             # tasks fetched at a time
+KINDS = (1, 2)          # the lock formats this reads: what a task's tree hash is taken over
 GRADING = "tests/"      # a task's files that grade: a change there voids earlier scores on the task
 
 
@@ -70,24 +71,45 @@ def show(delivery: str, sleep: Callable[[float], None] = time.sleep) -> dict[str
 # -- the tree, as the cut counts it ------------------------------------------------------------------------------
 
 
+def files(tree: Path) -> list[tuple[str, str, str]]:
+    """(path, sha256, mode) for every file under `tree`, in path order. A link's content is its target; a mode is
+    git's: 100755 where the owner may execute, 100644, or 120000 for a link."""
+    out = []
+    for home, dirs, names in os.walk(tree):
+        for name in names + [d for d in dirs if (Path(home) / d).is_symlink()]:
+            path = Path(home) / name
+            if path.is_symlink():
+                body, mode = os.readlink(path).encode(), "120000"
+            else:
+                body = path.read_bytes()
+                mode = "100755" if path.stat().st_mode & 0o100 else "100644"
+            out.append((path.relative_to(tree).as_posix(), hashlib.sha256(body).hexdigest(), mode))
+    return sorted(out)
+
+
 def sums(tree: Path) -> list[str]:
     """`<sha256>  <path>` for every file under `tree`, in path order."""
-    out = []
-    for home, dirs, files in os.walk(tree):
-        dirs.sort()
-        for name in files:
-            path = Path(home) / name
-            out.append((path.relative_to(tree).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()))
-    return [f"{digest}  {rel}" for rel, digest in sorted(out)]
+    return [f"{digest}  {rel}" for rel, digest, _ in files(tree)]
 
 
-def tree_hash(lines: list[str]) -> str:
+def tree_hash(tree: Path, kind: int = 2) -> str:
+    """A task's tree as a lock of that kind names it (the lock's `lock` field, 1 where it has none): the first
+    kind over its SHA256SUMS lines, the second over `<sha256>  <mode>  <path>`, so a mode is held too."""
+    lines = [f"{d}  {m}  {p}" for p, d, m in files(tree)] if kind >= 2 else sums(tree)
     return "sha256:" + hashlib.sha256("".join(line + "\n" for line in lines).encode()).hexdigest()
 
 
-def _holds(bundle: Path, tree: str) -> bool:
+def _kind(lock: dict[str, Any]) -> int:
+    kind = lock.get("lock", 1)
+    if kind not in KINDS:
+        raise _need(f"{lock.get('delivery')} has a lock of kind {kind!r}, newer than this kennet reads; upgrade "
+                    "kennet (pip install -U metaphi-ai, or brew upgrade kennet)", "lock_too_new")
+    return kind
+
+
+def _holds(bundle: Path, tree: str, kind: int) -> bool:
     try:
-        return bundle.is_dir() and tree_hash(sums(bundle)) == tree
+        return bundle.is_dir() and not bundle.is_symlink() and tree_hash(bundle, kind) == tree
     except OSError:
         return False
 
@@ -122,7 +144,8 @@ def _unpack(tar_path: Path, into: Path) -> None:
                 (into / m.name).chmod(stat.S_IMODE(m.mode) & 0o755 | 0o700)
 
 
-def _fetch(h: httpx.Client, delivery: str, task: dict[str, Any], home: Path, sleep: Callable[[float], None]) -> int:
+def _fetch(h: httpx.Client, delivery: str, task: dict[str, Any], home: Path, kind: int,
+           sleep: Callable[[float], None]) -> int:
     """One task fetched, checked against its tree hash and put in place. Returns the bytes downloaded."""
     name, mark = task["name"], uuid.uuid4().hex[:8]
     tar_path, fresh = home / f".{name}.{mark}.tar", home / f".{name}.{mark}.part"
@@ -148,7 +171,7 @@ def _fetch(h: httpx.Client, delivery: str, task: dict[str, Any], home: Path, sle
         size = tar_path.stat().st_size
         try:
             _unpack(tar_path, fresh)
-            good = tree_hash(sums(fresh)) == task["tree"]
+            good = tree_hash(fresh, kind) == task["tree"]
         except (OSError, ValueError, tarfile.TarError):
             good = False
         if not good:
@@ -194,8 +217,8 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
                 other = "another lock"
             raise _need(f"{to} holds {other}, not {delivery}; a delivery has its own directory", "directory_in_use",
                         f"kennet delivery pull {delivery} --to {default_dir(delivery)}")
-        home = to / TASKS
-        want = [t for t in lock["tasks"] if not _holds(home / t["name"], t["tree"])]
+        home, kind = to / TASKS, _kind(lock)
+        want = [t for t in lock["tasks"] if not _holds(home / t["name"], t["tree"], kind)]
         result: dict[str, Any] = {"id": delivery, "dir": str(to), "lock": str(there), "dry_run": dry_run,
                                   "tasks": len(lock["tasks"]), "unchanged": len(lock["tasks"]) - len(want),
                                   "fetched": [t["name"] for t in want], "bytes": 0}
@@ -205,7 +228,7 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
         done = [0]
 
         def one(task: dict[str, Any]) -> int:
-            size = _fetch(h, delivery, task, home, sleep)
+            size = _fetch(h, delivery, task, home, kind, sleep)
             done[0] += 1
             say(f"  {done[0]}/{len(want)}  {task['name']}")
             return size
@@ -230,7 +253,7 @@ def verify(to: Path) -> dict[str, Any]:
     except (OSError, ValueError):
         raise _need(f"{to} holds no {LOCK}: it is not a pulled delivery", "not_a_delivery",
                     "kennet delivery list") from None
-    home, delivery = to / TASKS, lock["delivery"]
+    home, delivery, kind = to / TASKS, lock["delivery"], _kind(lock)
     want: dict[str, str] = {}
     if (to / SUMS).exists():
         for line in (to / SUMS).read_text(encoding="utf-8").splitlines():
@@ -239,18 +262,20 @@ def verify(to: Path) -> dict[str, Any]:
     tasks, differ = [], []
     for t in lock["tasks"]:
         bundle = home / t["name"]
-        if not bundle.is_dir():
-            state, files = "missing", []
+        if not bundle.is_dir() or bundle.is_symlink():
+            state, differing = "missing", []
         else:
             have = dict(reversed(line.split("  ", 1)) for line in sums(bundle))
-            state = "as_delivered" if tree_hash(sums(bundle)) == t["tree"] else "changed"
+            state = "as_delivered" if tree_hash(bundle, kind) == t["tree"] else "changed"
             mine = {rel[len(t["name"]) + 1:]: d for rel, d in want.items() if rel.startswith(t["name"] + "/")}
-            files = [] if state == "as_delivered" else [
+            differing = [] if state == "as_delivered" or not mine else [
                 {"path": f, "state": "missing" if f not in have else "added" if f not in mine else "changed"}
-                for f in sorted(mine.keys() | have.keys()) if mine.get(f) != have.get(f)] if mine else []
+                for f in sorted(mine.keys() | have.keys()) if mine.get(f) != have.get(f)]
         tasks.append({"name": t["name"], "tree": t["tree"], "state": state})
         if state != "as_delivered":
-            differ.append({"name": t["name"], "state": state, "files": files})
+            # every byte as delivered and the tree is not: a file's mode differs, which the sums do not hold
+            differ.append({"name": t["name"], "state": state, "files": differing,
+                           "modes_only": state == "changed" and bool(mine) and not differing})
     named = {t["name"] for t in lock["tasks"]}
     added = sorted(p.name for p in home.iterdir() if p.name not in named and not p.name.startswith(".")
                    ) if home.is_dir() else []

@@ -37,9 +37,9 @@ def served(tmp_path, name: str, tasks: dict[str, dict[str, str]]) -> dict:
             for path in sorted((root / task).rglob("*")):
                 tar.add(path, arcname=path.relative_to(root / task).as_posix(), recursive=False)
         tars[task] = raw.getvalue()
-        locked.append({"name": task, "tree": delivery.tree_hash(delivery.sums(root / task)),
+        locked.append({"name": task, "tree": delivery.tree_hash(root / task),
                        "images": [f"{task}-env@sha256:{'1' * 64}", f"grader@sha256:{'2' * 64}"]})
-    lock = {"delivery": name, "customer": "a", "delivered": "2026-10-12", "source": "0" * 40,
+    lock = {"lock": 2, "delivery": name, "customer": "a", "delivered": "2026-10-12", "source": "0" * 40,
             "registry": REGISTRY, "tasks": locked}
     view = {"id": name, "object": "delivery", "name": name.split("@")[0], "version": name.split("@")[1],
             "delivered": "2026-10-12", "newer": None, "registry": REGISTRY, "task_count": len(locked),
@@ -115,13 +115,19 @@ def test_pull_fetches_what_differs_and_verify_checks_it_offline(home, capsys):
     (to / "tasks" / "stray").mkdir()
     code, got, _ = run(capsys, "delivery", "verify", "set-0.1.0")
     assert code == 1 and not got["ok"] and got["as_delivered"] == 1 and got["added"] == ["stray"]
-    assert got["differ"] == [{"name": "one", "state": "changed", "files": [
+    assert got["differ"] == [{"name": "one", "state": "changed", "modes_only": False, "files": [
         {"path": "notes.txt", "state": "added"}, {"path": "tests/test.sh", "state": "changed"}]}]
     assert got["next_step"] == "kennet delivery pull set@0.1.0 --to set-0.1.0"
     assert cli.main(["verify", "set-0.1.0"]) == 1
     said = capsys.readouterr().out
     assert "changed  one: notes.txt (added), tests/test.sh (changed)" in said
     assert "set@0.1.0: 1 of 2 tasks as delivered" in said
+
+    # a mode is part of the tree: the bytes are as delivered, and the task is not
+    (to / "tasks" / "two" / "tests" / "test.sh").chmod(0o644)
+    code, got, _ = run(capsys, "verify", "set-0.1.0")
+    assert code == 1 and {"name": "two", "state": "changed", "files": [], "modes_only": True} in got["differ"]
+    (to / "tasks" / "two" / "tests" / "test.sh").chmod(0o755)
 
     # a pull puts the changed task back as delivered, and leaves what it did not bring
     made = served(home, "set@0.1.0", TASKS)
