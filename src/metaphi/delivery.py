@@ -8,13 +8,18 @@ A delivery is `<name>@<version>` and never changes; a fix is a new version. Pull
 
 A task's tree hash is the SHA-256 of its own SHA256SUMS lines (`<sha256>  <path>`, in path order), so `sha256sum`
 alone can check one. `pull` fetches a task only when the directory does not already hold the tree the lock names,
-checks every task it unpacks before it puts it in place, and deletes nothing it did not write. `verify` reads the
-directory and nothing else: no key, no network."""
+checks every task it unpacks before it puts it in place, and puts a task that was changed back whole, as delivered:
+what was added inside that task goes with it, and nothing outside the delivery's tasks is touched. `verify` reads
+the directory and nothing else: no key, no network.
+
+Nothing the service sends is trusted with a path: a lock's names are checked before one is used, and a tar is
+unpacked member by member, each one's place resolved on the disk before it is written."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tarfile
@@ -32,6 +37,9 @@ from metaphi.twin import UPLOAD, _client, _error, _key, _retry_after, _send, _Tr
 
 LOCK, SUMS, TASKS = "delivery.lock.json", "SHA256SUMS", "tasks"
 AT_ONCE = 8             # tasks fetched at a time
+ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}@[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
+TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+TREE = re.compile(r"sha256:[0-9a-f]{64}")
 KINDS = (1, 2)          # the lock formats this reads: what a task's tree hash is taken over
 GRADING = "tests/"      # a task's files that grade: a change there voids earlier scores on the task
 
@@ -99,6 +107,24 @@ def tree_hash(tree: Path, kind: int = 2) -> str:
     return "sha256:" + hashlib.sha256("".join(line + "\n" for line in lines).encode()).hexdigest()
 
 
+def _read_lock(raw: bytes) -> dict[str, Any] | None:
+    """A lock whose every name is safe to use as a path, or None: a task's name is one directory, never a way
+    out of `tasks/`."""
+    try:
+        lock = json.loads(raw)
+    except ValueError:
+        return None
+    tasks = lock.get("tasks") if isinstance(lock, dict) else None
+    if not isinstance(tasks, list) or not ID.fullmatch(str(lock.get("delivery", ""))):
+        return None
+    for t in tasks:
+        if not (isinstance(t, dict) and isinstance(t.get("name"), str) and TASK.fullmatch(t["name"])
+                and isinstance(t.get("tree"), str) and TREE.fullmatch(t["tree"])
+                and isinstance(t.get("images", []), list)):
+            return None
+    return lock if len({t["name"] for t in tasks}) == len(tasks) else None
+
+
 def _kind(lock: dict[str, Any]) -> int:
     kind = lock.get("lock", 1)
     if kind not in KINDS:
@@ -114,9 +140,17 @@ def _holds(bundle: Path, tree: str, kind: int) -> bool:
         return False
 
 
+def _inside(at: Path, root: str) -> Path:
+    """`at`, once its directory as the disk has it now (every link followed) is seen to lie under `root`."""
+    parent = os.path.realpath(at.parent)
+    if parent != root and not parent.startswith(root + os.sep):
+        raise ValueError(f"{at.name!r} would be written outside the task")
+    return at
+
+
 def _unpack(tar_path: Path, into: Path) -> None:
     """A task's tar written under `into`: files, directories and links that stay inside it, and nothing else."""
-    with tarfile.open(tar_path) as tar:
+    with tarfile.open(tar_path, "r:") as tar:   # a plain tar: nothing here is decompressed
         members = tar.getmembers()
         for m in members:
             name = PurePosixPath(m.name)
@@ -127,20 +161,28 @@ def _unpack(tar_path: Path, into: Path) -> None:
                 if PurePosixPath(m.linkname).is_absolute() or ".." in to.parts:
                     raise ValueError(f"{m.name!r} links outside the task")
         into.mkdir(parents=True)
+        root = os.path.realpath(into)
         for m in members:
             at = into / m.name
+            # a directory is made one part at a time, each where the disk says the last one is: a link among
+            # them that leads out is met here, before anything is written past it
+            for part in reversed([at, *at.parents][:len(PurePosixPath(m.name).parts)][1:]):
+                if not part.is_dir():
+                    _inside(part, root).mkdir()
             if m.isdir():
-                at.mkdir(parents=True, exist_ok=True)
+                if not at.is_dir():
+                    _inside(at, root).mkdir()
             elif m.issym():
-                at.parent.mkdir(parents=True, exist_ok=True)
-                os.symlink(m.linkname, at)
+                os.symlink(m.linkname, _inside(at, root))
             else:
-                at.parent.mkdir(parents=True, exist_ok=True)
-                with tar.extractfile(m) as src, open(at, "wb") as dst:   # type: ignore[union-attr]
+                if at.is_symlink():
+                    raise ValueError(f"{m.name!r} is both a link and a file")
+                with tar.extractfile(m) as src, open(_inside(at, root), "wb") as dst:   # type: ignore[union-attr]
                     shutil.copyfileobj(src, dst)
                 at.chmod(stat.S_IMODE(m.mode) & 0o755 | 0o600)
         for m in members:   # a directory's mode last: one that is read-only still took its files
-            if m.isdir():
+            if m.isdir() and not (into / m.name).is_symlink():
+                _inside(into / m.name, root)
                 (into / m.name).chmod(stat.S_IMODE(m.mode) & 0o755 | 0o700)
 
 
@@ -176,7 +218,8 @@ def _fetch(h: httpx.Client, delivery: str, task: dict[str, Any], home: Path, kin
             good = False
         if not good:
             raise errors.APIError(f"{name}: what was downloaded is not the tree the lock names; nothing was put "
-                                  "in place", code="tree_mismatch", retryable=True)
+                                  "in place", code="tree_mismatch", retryable=True,
+                                  next_step=f"kennet delivery pull {delivery}")
         bundle, old = home / name, home / f".{name}.{mark}.old"
         if bundle.exists() or bundle.is_symlink():
             bundle.rename(old)
@@ -201,6 +244,9 @@ def default_dir(delivery: str) -> Path:
 def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Callable[[str], None] = print,
          sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Make `to` the delivery: the lock, the sums, and every task whose tree is not already there."""
+    if not ID.fullmatch(delivery):
+        raise _need(f"{delivery!r} is not a delivery: one is <name>@<version>, as `kennet delivery list` says them",
+                    "invalid_delivery", "kennet delivery list")
     to = to or default_dir(delivery)
     with _client(_key(None, False)) as h:
         try:
@@ -208,16 +254,19 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
             sums_raw = _send(h, "GET", f"/deliveries/{delivery}/sums", sleep).content
         except errors.MetaphiError as e:
             raise _named(e) from None
-        lock = json.loads(lock_raw)
+        lock = _read_lock(lock_raw)
+        if lock is None or lock["delivery"] != delivery:
+            raise errors.APIError(f"the lock the service sent for {delivery} is not one this reads; nothing was "
+                                  "written", code="lock_invalid")
         there = to / LOCK
         if there.exists() and there.read_bytes() != lock_raw:
-            try:
-                other = json.loads(there.read_bytes()).get("delivery")
-            except ValueError:
-                other = "another lock"
+            other = (_read_lock(there.read_bytes()) or {}).get("delivery") or "another lock"
             raise _need(f"{to} holds {other}, not {delivery}; a delivery has its own directory", "directory_in_use",
                         f"kennet delivery pull {delivery} --to {default_dir(delivery)}")
         home, kind = to / TASKS, _kind(lock)
+        if home.is_symlink():
+            raise _need(f"{home} is a link; a delivery's tasks are a directory of its own", "directory_in_use",
+                        f"kennet delivery pull {delivery} --to {default_dir(delivery)}")
         want = [t for t in lock["tasks"] if not _holds(home / t["name"], t["tree"], kind)]
         result: dict[str, Any] = {"id": delivery, "dir": str(to), "lock": str(there), "dry_run": dry_run,
                                   "tasks": len(lock["tasks"]), "unchanged": len(lock["tasks"]) - len(want),
@@ -249,16 +298,21 @@ def verify(to: Path) -> dict[str, Any]:
     """Every task of the directory against the lock beside it: as delivered, changed or missing, and what is there
     that the delivery did not bring."""
     try:
-        lock = json.loads((to / LOCK).read_bytes())
-    except (OSError, ValueError):
-        raise _need(f"{to} holds no {LOCK}: it is not a pulled delivery", "not_a_delivery",
-                    "kennet delivery list") from None
+        lock = _read_lock((to / LOCK).read_bytes())
+    except OSError:
+        lock = None
+    if lock is None or (to / TASKS).is_symlink():
+        raise _need(f"{to} holds no {LOCK} this reads, or its {TASKS}/ is a link: it is not a pulled delivery",
+                    "not_a_delivery", "kennet delivery list")
     home, delivery, kind = to / TASKS, lock["delivery"], _kind(lock)
     want: dict[str, str] = {}
-    if (to / SUMS).exists():
-        for line in (to / SUMS).read_text(encoding="utf-8").splitlines():
-            digest, _, rel = line.partition("  ")
-            want[rel] = digest
+    try:
+        listed = (to / SUMS).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        listed = None
+    for line in listed or []:
+        digest, _, rel = line.partition("  ")
+        want[rel] = digest
     tasks, differ = [], []
     for t in lock["tasks"]:
         bundle = home / t["name"]
@@ -277,11 +331,16 @@ def verify(to: Path) -> dict[str, Any]:
             differ.append({"name": t["name"], "state": state, "files": differing,
                            "modes_only": state == "changed" and bool(mine) and not differing})
     named = {t["name"] for t in lock["tasks"]}
-    added = sorted(p.name for p in home.iterdir() if p.name not in named and not p.name.startswith(".")
-                   ) if home.is_dir() else []
-    ok = not differ and not added
+    added = sorted(p.name for p in home.iterdir() if p.name not in named) if home.is_dir() else []
+    # the sums file is what a person checks by hand: with every tree as delivered, it says exactly those files
+    off = {d["name"] for d in differ}
+    held = {f"{digest}  {t['name']}/{path}" for t in lock["tasks"] if t["name"] not in off
+            for path, digest, _ in files(home / t["name"])}
+    said = ("missing" if listed is None else
+            "as_delivered" if held <= set(listed) and (off or len(listed) == len(held)) else "changed")
+    ok = not differ and not added and said == "as_delivered"
     return {"id": delivery, "dir": str(to), "ok": ok, "tasks": len(tasks),
-            "as_delivered": len(tasks) - len(differ), "differ": differ, "added": added,
+            "as_delivered": len(tasks) - len(differ), "differ": differ, "added": added, "sums": said,
             "next_step": None if ok else f"kennet delivery pull {delivery} --to {to}"}
 
 

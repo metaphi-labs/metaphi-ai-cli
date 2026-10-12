@@ -322,6 +322,7 @@ def cmd_delivery_verify(a: argparse.Namespace) -> int:
         files = files or ("a file's mode differs; its bytes are as delivered" if t["modes_only"] else "")
         lines.append(f"{t['state']:<8} {t['name']}" + (f": {files}" if files else ""))
     lines += [f"added    {name}  (not in the delivery)" for name in got["added"]]
+    lines += [f"{got['sums']:<8} SHA256SUMS"] if got["sums"] != "as_delivered" else []
     lines.append(f"{got['id']}: {got['as_delivered']} of {got['tasks']} tasks as delivered")
     _out(a, got, *lines, *([f"Next: {got['next_step']}"] if got["next_step"] else []))
     return 0 if got["ok"] else FAILED

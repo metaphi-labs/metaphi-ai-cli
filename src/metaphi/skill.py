@@ -204,8 +204,9 @@ kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "remo
 ```
 
 - `pull` is safe to run again: it fetches only the tasks the directory does not already hold as the lock names
-  them, and puts back a task that was changed. `--dry-run` says what it would fetch. It deletes nothing it did
-  not bring. A pull that stopped is finished by the same command.
+  them. A task that was changed is put back whole, as delivered, and anything added inside it goes: keep your
+  own files (results, notes, solutions) outside the delivery's directory. `--dry-run` names the tasks it would
+  fetch and so replace. A pull that stopped is finished by the same command.
 - The pulled directory is `delivery.lock.json`, `SHA256SUMS` and `tasks/<task>/`. The lock is the record: each
   task's `tree` (a SHA-256 over every file's hash, mode and path) and its `images` by digest. `verify` reads that directory
   and nothing else, so it works with no key and no network, on the training machine too. Run it before a run,
@@ -230,7 +231,8 @@ Errors: `resource_missing` (no such delivery for your organization; `kennet deli
 `insufficient_scope` (this machine's keys predate deliveries; `kennet login --json` replaces them, with no
 browser), `directory_in_use` (the directory holds another delivery; `next_step` names a free one),
 `tree_mismatch` (a download was not the locked tree and was thrown away; run the pull again),
-`not_a_delivery` (`verify` was pointed at a directory with no lock).
+`not_a_delivery` (`verify` was pointed at a directory with no lock it can read), `invalid_delivery` (the id is
+not `<name>@<version>`), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 """
 
 

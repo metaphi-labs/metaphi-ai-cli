@@ -188,6 +188,62 @@ def test_diff_says_whose_grading_changed(home, capsys):
     assert got["grading_changed"] == ["one"]
 
 
+def test_a_chain_of_links_never_carries_a_file_out_of_the_task(home):
+    raw = home / "chain.tar"
+    with tarfile.open(raw, "w") as tar:
+        def add(name, link=None, kind=tarfile.DIRTYPE):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE if link else kind
+            info.linkname = link or ""
+            tar.addfile(info, io.BytesIO(b"") if kind == tarfile.REGTYPE and not link else None)
+        add("a")
+        for name in ("a/b", "a/b/c", "a/b/c/d", "a/b/c/d/e"):
+            add(name, link="..")
+        add("a/b/c/d/e/PWNED.txt", kind=tarfile.REGTYPE)
+    (home / "deep" / "er").mkdir(parents=True)
+    with pytest.raises(ValueError, match="outside the task"):
+        delivery._unpack(raw, home / "deep" / "er" / "into")
+    assert not list(home.rglob("PWNED.txt"))
+
+
+@respx.mock
+def test_a_lock_whose_names_are_not_names_writes_nothing(home, capsys):
+    (home / "victim").mkdir()
+    (home / "victim" / "keep.txt").write_text("mine")
+    for name in ("../../victim", "a/b", ".", ""):
+        lock = {"lock": 2, "delivery": "set@0.1.0", "tasks": [{"name": name, "tree": "sha256:" + "0" * 64,
+                                                               "images": []}]}
+        respx.get(f"{API}/deliveries/set@0.1.0/lock").respond(json=lock)
+        respx.get(f"{API}/deliveries/set@0.1.0/sums").respond(text="")
+        code, got, _ = run(capsys, "pull", "set@0.1.0", "--to", "x/y")
+        assert code == 1 and got["error"]["code"] == "lock_invalid", name
+    assert (home / "victim" / "keep.txt").read_text() == "mine" and not (home / "x").exists()
+    code, got, _ = run(capsys, "pull", "../set@1")
+    assert code == 1 and got["error"]["code"] == "invalid_delivery"
+
+
+@respx.mock
+def test_verify_holds_the_sums_file_and_a_lock_it_cannot_read_is_no_delivery(home, capsys):
+    served(home, "set@0.1.0", TASKS)
+    assert run(capsys, "pull", "set@0.1.0")[0] == 0
+    to = home / "set-0.1.0"
+    kept = (to / "SHA256SUMS").read_text()
+    (to / "SHA256SUMS").write_text(kept.replace("instruction.md", "instruction.txt", 1))
+    code, got, _ = run(capsys, "verify", "set-0.1.0")
+    assert code == 1 and got["sums"] == "changed" and got["as_delivered"] == 2
+    (to / "SHA256SUMS").unlink()
+    code, got, _ = run(capsys, "verify", "set-0.1.0")
+    assert code == 1 and got["sums"] == "missing"
+    (to / "SHA256SUMS").write_text(kept)
+    (to / "tasks" / ".hidden").mkdir()
+    code, got, _ = run(capsys, "verify", "set-0.1.0")
+    assert code == 1 and got["added"] == [".hidden"] and got["sums"] == "as_delivered"
+    for body in ("{}", "[]", "not json", '{"delivery": "x; rm -rf ~@1", "tasks": []}'):
+        (to / "delivery.lock.json").write_text(body)
+        code, got, _ = run(capsys, "verify", "set-0.1.0")
+        assert code == 1 and got["error"]["code"] == "not_a_delivery", body
+
+
 def test_a_tar_that_reaches_outside_the_task_is_refused(home):
     for name, link in (("../out", None), ("a", "/etc/passwd"), ("a", "../../out")):
         raw = home / "bad.tar"
