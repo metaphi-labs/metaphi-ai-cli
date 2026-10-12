@@ -27,7 +27,7 @@ DEFAULT_API = "https://api.metaphi.ai/v1/kennet"
 ALLOWED_DOMAIN = "metaphi.ai"
 KEY_PREFIX = "mai_sk_"
 KEYRING_SERVICE = "metaphi-ai"
-SECRETS = ("api_key", "test_api_key", "token")
+SECRETS = ("api_key", "test_api_key", "token", "device_code")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
 

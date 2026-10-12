@@ -30,7 +30,31 @@ works and says why no key was saved.
 `metaphi twin trace.json --test` runs on the test key. Test runs go through the same pipeline but cost nothing; files
 can be at most 256 KiB and an organization gets 20 runs a day. Test twins and live twins never see each other.
 
-Keys, members and billing are managed in the console at <https://app.metaphi.ai/keys>, not from the CLI.
+Usage, keys, members and billing are in the console at <https://app.metaphi.ai/console>; the work is done here.
+
+## Driving it from an agent
+
+The CLI is made to be run by a coding agent (Claude Code and the like) as much as typed. Away from a terminal
+nothing waits on a question, and every command takes `--json`: stdout is then the result, or the error object,
+alone, and progress goes to stderr. An error that one command clears names it: `Next: <command>` on stderr,
+`next_step` in the JSON.
+
+```sh
+metaphi login --json           # {"verification_uri", "user_code", "expires_in", "next_step": "metaphi login --complete"}
+                               # the person opens the page and confirms the code
+metaphi login --complete       # waits for the approval and saves the keys; safe to run again
+metaphi whoami --json          # asks the server: email, organizations (role, grants, balance), the key in use
+metaphi twin trace.json --no-wait --json    # {"id", "status", "next_step": "metaphi twins wait twin_..."}
+metaphi twins wait twin_... --json          # {"output", "id"} once it ends
+metaphi twins list --json      # the organization's twins, newest first
+```
+
+Away from a terminal `metaphi login` is `--no-wait` by itself: it prints the page and the code and returns, so the
+agent can show them to its person. `--wait` keeps the old behaviour, one call that waits for the approval.
+
+A twin started is the service's, not the terminal's. Ctrl-C, a closed session or `--timeout` stop the waiting, never
+the twin, and say how to come back: `metaphi twins wait <id>` (add `--test` for a test twin), from any machine
+holding the organization's key.
 
 ## Use it from your servers
 
@@ -45,8 +69,8 @@ metaphi twin trace.json -o out.json --json
 `metaphi login --with-api-key`, which reads it from stdin (or prompts without echo), so it never lands in your shell
 history or the process list.
 
-One trace file in, one twinned file out, in the same format. `--json` prints `{"output"}` on stdout, with progress
-on stderr. Or from Python:
+One trace file in, one twinned file out, in the same format. `--json` prints `{"output", "id"}` on stdout, with
+progress on stderr. Or from Python:
 
 ```python
 from pathlib import Path
@@ -66,6 +90,8 @@ One key per environment (`prod`, `staging`) or per customer is a good default. R
 | `--key <64 hex>` | Keys the stand-in values. The same key gives a person the same stand-in in every trace, so a corpus stays consistent. Default: a fresh key per trace. |
 | `--confidential <org>` | Replaces an organization even though it is public, e.g. your customer. Repeatable. |
 | `--test` | Runs on the test key `metaphi login` saved: free, small, apart from live twins. |
+| `--no-wait` | Starts the twin and returns its id; `metaphi twins wait <id>` comes back for it. |
+| `--timeout <seconds>` | How long to wait for the twin. The twin goes on past it. |
 
 The organization key comes from `METAPHI_API_KEY`, then the saved key. (`--api-key` still works but is deprecated: an
 argument is visible in shell history and to other processes.)
@@ -83,7 +109,8 @@ error: This organization's prepaid balance is used up; add credits to continue. 
 ```
 
 With `--json`, stdout also gets the error object: `{"error": {"type", "code", "message", "retryable", "request_id"}}`,
-plus `run_id` when a run failed and `action_url` when a page fixes it. Quote the `request_id` to support.
+plus `run_id` when a run failed, `action_url` when a page fixes it and `next_step` when a command does. Quote the
+`request_id` to support.
 
 From Python, each error `type` raises its own class from `metaphi.errors`. All of them subclass `MetaphiError`:
 
@@ -113,12 +140,27 @@ except MetaphiError as e:
 | `APIError` | `api_error` | `unavailable`, `balance_unavailable`, `run_unavailable` |
 
 `retryable` says whether making the same call again later may succeed. For a failed run, it means uploading the same
-trace again. An error the CLI says itself, such as a missing key, is a plain `MetaphiError` with `code` set to `None`.
+trace again.
+
+The CLI says a few errors itself, each with the command that clears it as `next_step`. They are `auth_error`s,
+but for the last:
+
+| Code | When | `next_step` |
+| --- | --- | --- |
+| `not_signed_in` | no sign-in on this machine, or the server has ended it | `metaphi login` |
+| `no_api_key` | not signed in and no `METAPHI_API_KEY` | `metaphi login` |
+| `no_api_key` | signed in, but the organization was handed no key; the message says why | `metaphi whoami` |
+| `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `metaphi login` |
+| `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `metaphi twins wait <id>` |
+
+Any other error the CLI says itself, such as a file that is not there, is a plain `MetaphiError` with `code` `None`.
 
 ## Your organization
 
-`metaphi whoami` shows who you are signed in as and the keys saved on this machine. People, roles and keys are managed
-in the console at <https://app.metaphi.ai/keys>.
+`metaphi whoami` asks the server who you are: your organizations, your role and what each may do, its prepaid balance
+when you may see it, and which key calls run on (the saved one, or `METAPHI_API_KEY`), by its last four characters.
+A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
+the console at <https://app.metaphi.ai/console>.
 
 ## Credits
 
@@ -155,6 +197,9 @@ In CI, a pipe or with `--json` nothing is asked. The command exits 1 with the er
 ```
 Add credit: https://app.metaphi.ai/console?add=credit  or run: metaphi credits buy --amount <amount>
 ```
+
+With `--json` the error object carries the same two things: `action_url`, the page, and `next_step`,
+`metaphi credits buy`, which prints a Stripe Checkout link and waits until it is paid.
 
 The library never prompts: `twin()` raises `BillingError`, whose `action_url` is the add-credit page when the service
 sent one.

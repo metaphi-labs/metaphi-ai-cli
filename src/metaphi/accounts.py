@@ -21,7 +21,13 @@ MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the se
 
 
 class Error(MetaphiError):
-    """A refusal, in the server's own sentence, with no code: accounts' own, or one the CLI makes itself."""
+    """A refusal in the server's own sentence, or one the CLI makes itself; the CLI's own carry a `code` and the
+    `next_step` that clears them (`need`)."""
+
+
+def need(message: str, code: str, next_step: str) -> Error:
+    """A refusal the CLI makes because a credential is missing or spent: its code, and the command that clears it."""
+    return Error(message, code=code, type="auth_error", next_step=next_step)
 
 
 def _said(r: httpx.Response) -> str:
@@ -50,42 +56,67 @@ def _http() -> httpx.Client:
                         headers={"user-agent": f"metaphi-cli/{__import__('metaphi').__version__}"})
 
 
-def login(say: Callable[[str], None] = print, open_browser: bool = True,
-          sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
-    """Sign the person in: show a code, open the browser on it, wait for the approval, keep the token and the
-    organization's keys that come with it (`api_key`, `test_api_key`; `no_api_key` says why none came)."""
+def start() -> dict[str, Any]:
+    """Ask for a device code (RFC 8628 §3.1) and keep it as the sign-in under way: what the person is shown
+    (`verification_uri`, `user_code`) and what `finish` polls with."""
     with _http() as h:
         r = h.post("/device/code", data={"client_id": CLIENT_ID})
-        if r.status_code != 200:
-            raise Error(_said(r))
-        code = _json(r)
-        if not all(isinstance(code.get(k), str) and code[k] for k in ("device_code", "user_code", "verification_uri")):
-            raise Error("the sign-in server sent an incomplete device code")
-        # RFC 8628 §3.3: the person types the code at verification_uri; verification_uri_complete is optional.
-        uri, complete = code["verification_uri"], code.get("verification_uri_complete")
-        config.check_url(uri, "the sign-in page")
-        say(f"Open {uri} and enter the code {code['user_code']}")
-        if open_browser:
-            webbrowser.open(config.check_url(complete, "the sign-in page") if isinstance(complete, str) and complete
-                            else uri)
-        try:
-            interval = max(MIN_INTERVAL, float(code.get("interval") or MIN_INTERVAL))
-            deadline = time.time() + min(float(code.get("expires_in") or 600), 1800.0)
-        except (TypeError, ValueError):
-            raise Error("the sign-in server sent an unreadable device code") from None
-        while time.time() < deadline:
+    if r.status_code != 200:
+        raise Error(_said(r))
+    code = _json(r)
+    if not all(isinstance(code.get(k), str) and code[k] for k in ("device_code", "user_code", "verification_uri")):
+        raise Error("the sign-in server sent an incomplete device code")
+    # RFC 8628 §3.3: the person types the code at verification_uri; verification_uri_complete is optional.
+    config.check_url(code["verification_uri"], "the sign-in page")
+    complete = code.get("verification_uri_complete")
+    try:
+        pending = {"user_code": code["user_code"], "verification_uri": code["verification_uri"],
+                   "open": config.check_url(complete, "the sign-in page") if isinstance(complete, str) and complete
+                   else code["verification_uri"],
+                   "interval": max(MIN_INTERVAL, float(code.get("interval") or MIN_INTERVAL)),
+                   "expires": time.time() + min(float(code.get("expires_in") or 600), 1800.0)}
+    except (TypeError, ValueError):
+        raise Error("the sign-in server sent an unreadable device code") from None
+    cfg = config.load()
+    cfg.update({"pending": pending, "device_code": code["device_code"]})
+    config.save(cfg)
+    return pending
+
+
+def pending() -> dict[str, Any] | None:
+    """The sign-in `start` left under way, while its code still stands."""
+    cfg = config.load()
+    held = cfg.get("pending")
+    if not isinstance(held, dict) or not cfg.get("device_code") or float(held.get("expires") or 0) <= time.time():
+        return None
+    return held
+
+
+def finish(sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Wait for the approval of the sign-in under way, then keep the token and the organization's keys that come
+    with it (`api_key`, `test_api_key`; `no_api_key` says why none came)."""
+    held = pending()
+    if held is None:
+        raise need("no sign-in is under way, or its code expired; run `metaphi login`", "login_expired",
+                   "metaphi login")
+    device_code, interval = config.load()["device_code"], float(held["interval"])
+    with _http() as h:
+        while time.time() < held["expires"]:
             sleep(interval)
-            r = h.post("/oauth/token", data={"grant_type": DEVICE_GRANT, "device_code": code["device_code"],
+            r = h.post("/oauth/token", data={"grant_type": DEVICE_GRANT, "device_code": device_code,
                                               "client_id": CLIENT_ID})
             body = _json(r)
             if r.status_code == 200:
                 if not isinstance(body.get("access_token"), str):
                     raise Error("the sign-in server sent no access token")
                 cfg = config.load()
+                for name in ("pending", "device_code", "test_api_key", "org", "no_api_key"):
+                    cfg.pop(name, None)  # the server revoked the last login's keys
                 cfg.update({"token": body["access_token"], "email": body.get("email")})
-                cfg.pop("test_api_key", None)  # the server revoked the last login's keys
                 if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
                     cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
+                # why whoami and twin can say, later, what this sign-in was and was not given
+                cfg.update({k: body[k] for k in ("org", "no_api_key") if isinstance(body.get(k), str) and body[k]})
                 config.save(cfg)
                 return body
             error = body.get("error")
@@ -94,15 +125,35 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
             if error == "slow_down":
                 interval += 5
                 continue
-            raise Error({"expired_token": "the code expired; run `metaphi login` again",
-                         "access_denied": "the sign-in was declined"}.get(error, _said(r)))
-    raise Error("the code expired; run `metaphi login` again")
+            _forget()
+            raise need({"expired_token": "the code expired; run `metaphi login` again",
+                        "access_denied": "the sign-in was declined"}.get(error, _said(r)),
+                       "login_expired" if error == "expired_token" else "login_refused", "metaphi login")
+    _forget()
+    raise need("the code expired; run `metaphi login` again", "login_expired", "metaphi login")
+
+
+def _forget() -> None:
+    cfg = config.load()
+    cfg.pop("pending", None)
+    cfg.pop("device_code", None)
+    config.save(cfg)
+
+
+def login(say: Callable[[str], None] = print, open_browser: bool = True,
+          sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Sign the person in: show a code, open the browser on it, wait for the approval (`start`, then `finish`)."""
+    held = start()
+    say(f"Open {held['verification_uri']} and enter the code {held['user_code']}")
+    if open_browser:
+        webbrowser.open(held["open"])
+    return finish(sleep)
 
 
 def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
-    for name in ("email", "api_key", "test_api_key"):
+    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "pending", "device_code"):
         cfg.pop(name, None)
     config.save(cfg)
     if token:
@@ -113,7 +164,7 @@ def logout() -> None:
 def _person() -> dict[str, str]:
     token = config.load().get("token")
     if not token:
-        raise Error("not signed in; run `metaphi login`")
+        raise need("not signed in; run `metaphi login`", "not_signed_in", "metaphi login")
     return {"authorization": f"Bearer {token}"}
 
 
@@ -122,7 +173,7 @@ def call(method: str, path: str, **kw: Any) -> Any:
     with _http() as h:
         r = h.request(method, path, headers=_person(), **kw)
     if r.status_code == 401:
-        raise Error("your sign-in has ended; run `metaphi login`")
+        raise need("your sign-in has ended; run `metaphi login`", "not_signed_in", "metaphi login")
     if r.status_code >= 400:
         raise Error(_said(r))
     return r.json()
