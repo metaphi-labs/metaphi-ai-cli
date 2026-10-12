@@ -5,7 +5,7 @@
     METAPHI_ACCOUNTS           the accounts host (default https://app.metaphi.ai)
     METAPHI_API                the twin API (default https://api.metaphi.ai/v1/kennet)
     METAPHI_ALLOW_CUSTOM_HOST  1 lets the two above, and the file links they hand out, leave metaphi.ai
-    METAPHI_TWIN_TIMEOUT       seconds `metaphi twin` waits for a twin to end (default 7200)
+    METAPHI_TWIN_TIMEOUT       seconds `kennet twin` waits for a twin to end (default 7200)
     METAPHI_NO_KEYRING         1 keeps secrets in the config file even when an OS keychain is available
 
 Secrets (the saved keys and the sign-in token) go to the OS keychain through `keyring` when one is available;
@@ -27,7 +27,7 @@ DEFAULT_API = "https://api.metaphi.ai/v1/kennet"
 ALLOWED_DOMAIN = "metaphi.ai"
 KEY_PREFIX = "mai_sk_"
 KEYRING_SERVICE = "metaphi-ai"
-SECRETS = ("api_key", "test_api_key", "token")
+SECRETS = ("api_key", "test_api_key", "token", "device_code")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
 
@@ -70,7 +70,7 @@ def _endpoint(var: str, default: str) -> str:
     check_url(url, var)
     if url != default and var not in _warned:
         _warned.add(var)
-        print(f"metaphi: warning: {var} points at {url}, not {default}", file=sys.stderr)
+        print(f"kennet: warning: {var} points at {url}, not {default}", file=sys.stderr)
     return url
 
 
@@ -109,7 +109,7 @@ def _keyring() -> Any:
 
 
 def keyring_backend() -> str:
-    """What holds secrets on this machine, for `metaphi --debug-keyring`."""
+    """What holds secrets on this machine, for `kennet --debug-keyring`."""
     kr = _keyring()
     return f"keyring: {kr.get_keyring()!r}" if kr is not None else f"file: {path()}"
 
@@ -153,7 +153,7 @@ def _write_file(cfg: dict[str, Any]) -> None:
         d.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(d, 0o700)
     elif os.name == "posix" and d.stat().st_mode & 0o077:
-        print(f"metaphi: warning: {d} is readable by others; run `chmod 700 {d}`", file=sys.stderr)
+        print(f"kennet: warning: {d} is readable by others; run `chmod 700 {d}`", file=sys.stderr)
     tmp = d / f".config.json.{secrets.token_hex(8)}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(tmp, flags, 0o600)
@@ -182,7 +182,7 @@ def save(cfg: dict[str, Any]) -> None:
                     with contextlib.suppress(Exception):  # nothing stored under that name
                         kr.delete_password(KEYRING_SERVICE, name)
         except Exception as e:  # noqa: BLE001 - the keychain refused: keep everything in the file instead
-            print(f"metaphi: warning: the OS keychain refused the secret ({e}); keeping it in {path()}",
+            print(f"kennet: warning: the OS keychain refused the secret ({e}); keeping it in {path()}",
                   file=sys.stderr)
             plain = dict(cfg)
     _write_file(plain)
