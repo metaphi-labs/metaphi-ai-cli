@@ -273,3 +273,38 @@ def test_a_tar_that_reaches_outside_the_task_is_refused(home):
             delivery._unpack(raw, home / "into")
         assert not (home / "into").exists()
     assert httpx  # the transport the client uses
+
+
+@respx.mock
+def test_registry_login_hands_the_token_to_the_client_on_stdin_and_never_says_it(home, capsys, monkeypatch):
+    token = {"object": "registry_token", "server": "registry.example", "repository": "registry.example/p/images",
+             "username": "oauth2accesstoken", "token": "ya29.secret", "expires_at": 1790000000}
+    respx.post(f"{API}/registry/token").respond(200, json=token)
+    ran = []
+
+    def run_(cmd, **kw):
+        ran.append((cmd, kw["input"]))
+        return type("R", (), {"returncode": 0, "stdout": "Login Succeeded", "stderr": ""})()
+    monkeypatch.setattr(delivery.shutil, "which", lambda name: f"/bin/{name}" if name == "podman" else None)
+    monkeypatch.setattr(delivery.subprocess, "run", run_)
+    code = cli.main(["registry", "login", "--json"])
+    said = capsys.readouterr()
+    got = json.loads(said.out)
+    assert code == 0 and got["client"] == "podman" and got["repository"] == token["repository"]
+    assert ran == [(["/bin/podman", "login", "registry.example", "--username", "oauth2accesstoken",
+                     "--password-stdin"], "ya29.secret")]
+    assert "ya29" not in said.out + said.err and "ya29" not in " ".join(ran[0][0])
+
+    assert cli.main(["registry", "token"]) == 0 and capsys.readouterr().out == "ya29.secret\n"
+    code, got, _ = run(capsys, "registry", "token")
+    assert code == 0 and got == token
+
+    monkeypatch.setattr(delivery.shutil, "which", lambda name: None)
+    code, got, _ = run(capsys, "registry", "login")
+    assert code == 1 and got["error"]["code"] == "no_container_client"
+    assert got["error"]["next_step"] == "kennet registry token"
+    respx.post(f"{API}/registry/token").respond(404, json={"error": {
+        "type": "invalid_request_error", "code": "resource_missing", "retryable": False,
+        "message": "no image repository org here"}})
+    code, got, _ = run(capsys, "registry", "token")
+    assert code == 1 and got["error"]["code"] == "resource_missing"

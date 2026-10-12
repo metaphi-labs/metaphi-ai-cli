@@ -200,8 +200,13 @@ kennet delivery list --json                         # {{"data": [{{"id", "delive
 kennet delivery show eswe-mini@0.1.0 --json         # the same, and "tasks": [{{"name", "tree", "images", "cpus", "memory_mb", "agent_timeout_s", "verifier_timeout_s", ...}}]
 kennet delivery pull eswe-mini@0.1.0 --json         # into ./eswe-mini-0.1.0 (or --to <dir>); {{"dir", "lock", "fetched", "unchanged", "bytes", "next_step"}}
 kennet delivery verify ./eswe-mini-0.1.0 --json     # offline; exit 0 and "ok": true, or exit 1 with "differ" (per file: "delivered" and "here" sha256) and "added"
+kennet registry login --json                        # signs docker in to your image repository for an hour; {{"server", "repository", "client", "expires_at"}}
 kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "removed", "changed": [{{"name", "grading_changed", "files"}}]}}; either side can be a pulled directory
 ```
+
+From nothing to a set ready to run, in order: `kennet login --json` (and `--complete`), `delivery list`,
+`delivery show <id>` to size the machines, `delivery pull <id>`, `delivery verify <dir>`, `registry login`, then
+pull each image the lock names. Each answer's `next_step` is the command that follows.
 
 - `pull` is safe to run again: it fetches only the tasks the directory does not already hold as the lock names
   them. A task that was changed is put back whole, as delivered, and anything added inside it goes: keep your
@@ -214,8 +219,13 @@ kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "remo
 - Size the sandboxes from `show`: a task's `cpus`, `memory_mb`, `storage_mb`, `agent_timeout_s` and
   `verifier_timeout_s` are what it asks. A sandbox smaller than that fails for reasons that are not the model's.
 - Images are in `registry`, your organization's own image repository, and a task runs only against the digests
-  its lock names: never pull one by tag. Your organization pulls with the service account it gave Metaphi AI;
-  fetch the images before a run, since the tasks run with no internet.
+  its lock names: never pull one by tag. `kennet registry login --json` signs docker (or podman, nerdctl) in to
+  that repository for an hour; it stores no key, so run it again when a pull is refused or `expires_at` has
+  passed. An image is `<registry>/<image>` for each entry of a task's `images`. For anything else that pulls
+  (a cluster's pull secret, crane, skopeo), `kennet registry token --json` answers `server`, `username`,
+  `token` and `expires_at`: hand the token over on stdin or in memory, never in a file, a log or a command
+  line. Fetch every image before a run, since the tasks run with no internet. An organization that gave
+  Metaphi AI a service account of its own pulls as that account too, with no token from here.
 - Run the tasks with Harbor on your own machines; nothing of Metaphi AI is called at run time. Keep the bundle
   as it is: `tests/` and `solution/` must never be put where the agent being trained can read them.
 - With every result you keep, record the delivery id and the task's `tree`. Scores compare only within one
@@ -232,7 +242,8 @@ Errors: `resource_missing` (no such delivery for your organization; `kennet deli
 browser), `directory_in_use` (the directory holds another delivery; `next_step` names a free one),
 `tree_mismatch` (a download was not the locked tree and was thrown away; run the pull again),
 `not_a_delivery` (`verify` was pointed at a directory with no lock it can read), `invalid_delivery` (the id is
-not `<name>@<version>`), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
+not `<name>@<version>`), `no_container_client` (nothing to sign in; use `kennet registry token`),
+`registry_login_failed` (the client refused; its reason is in the message), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 """
 
 
