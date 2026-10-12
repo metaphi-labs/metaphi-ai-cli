@@ -25,8 +25,9 @@ class Error(MetaphiError):
     `next_step` that clears them (`need`)."""
 
 
-def need(message: str, code: str, next_step: str) -> Error:
-    """A refusal the CLI makes because a credential is missing or spent: its code, and the command that clears it."""
+def need(message: str, code: str, next_step: str | None) -> Error:
+    """A refusal the CLI makes because a credential is missing or spent: its code, and the command that clears it
+    (None when only someone else can)."""
     return Error(message, code=code, type="auth_error", next_step=next_step)
 
 

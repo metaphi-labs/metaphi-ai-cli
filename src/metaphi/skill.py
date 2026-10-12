@@ -26,7 +26,7 @@ Run `kennet skill show` and follow what it prints: it is the guide for the versi
 If `kennet` is not found, install it, then run `kennet skill show`:
 
 ```sh
-brew install metaphi-labs/tap/metaphi    # macOS and Linux
+brew install metaphi-labs/tap/kennet     # macOS and Linux
 pip install metaphi-ai                   # anywhere with Python 3.10+
 ```
 """
@@ -44,17 +44,30 @@ their data goes.
 ## Rules
 
 - Add `--json` to every command. stdout is then one JSON object: the result, or `{{"error": {{...}}}}`. Progress
-  is on stderr. Exit 0 is success, 1 is an error.
-  Read stdout only: stderr repeats an error in words, for a person.
-- On an error, read `error.code` and find it in the table in step 4. `error.next_step` is the next command to run
-  (add `--json` to it). Never decide from the message text.
+  is on stderr. Read stdout only: stderr repeats an error in words, for a person.
+- The exit status says what kind of end it was:
+
+  | Exit | Meaning |
+  | --- | --- |
+  | 0 | Done. |
+  | 1 | Failed. Read `error.code`. |
+  | 2 | The command line was wrong (no JSON is printed). |
+  | 3 | A sign-in or a key is needed. `error.next_step` is the command, or null when only the user can clear it. |
+  | 4 | The same call may work later: the service is unavailable, a limit is reached, or a wait ran out. |
+
+- On an error, read `error.code` and find it in the table in step 4. `error.next_step` is always there: the next
+  command to run (add `--json` to it), or null when no command clears it. `error.retry_after_s`, when there, is
+  how long the service said to wait before the same call. Never decide from the message text.
+- A command retries a failed request for at most 5 seconds by itself. Past that it returns the error, so a
+  command that fails does so quickly; waiting longer is yours to do.
 - Never ask the user for an organization key (`mai_sk_...`), never print one, never pass one as an argument. They
   are saved by `kennet login` or come from `METAPHI_API_KEY`.
 - Start with a test run (`--test`): it is free, and it is a real twin of the user's file through the same
   pipeline, only limited in size and runs a day. A live run draws the organization's prepaid credit: ask the
   user before the first one, even after a good test run.
 - When a step needs the user and they are not there, stop and hand back what they have to do. Do not work around it.
-- Quote `error.request_id` to the user when something fails that you cannot clear.
+- When something fails that you cannot clear, quote `error.request_id` to the user, or `error.run_id` (the twin's
+  id) for a run that failed.
 
 ## 1. Where things stand
 
@@ -62,20 +75,32 @@ their data goes.
 kennet whoami --json
 ```
 
+It asks the servers, and asks the twin service whether each key works: `key.status` and `test_key.status` are
+`"ok"` or the code a call would meet now. Exit 0 means the key in use works.
+
+- `key.source` is `METAPHI_API_KEY`: the environment holds a key. No sign-in is needed, on this machine or in
+  CI; go to step 3. (That key decides live or test by itself: `mai_sk_test_...` is a test key.)
 - `error.code` `not_signed_in` (from this or any command): go to step 2.
-- `key` is null and `no_api_key` is set: the user is signed in but the organization has no key. Tell the user the
-  `no_api_key` sentence as it is. Signing in again does not help. Stop.
-- `key` is set: go to step 3. `organizations[].credits_usd` is the prepaid balance, when the user may see it.
+- `error.code` `no_api_key`: the user is signed in, and the sign-in was handed no key; the message says why.
+  Keys are handed over at sign-in only, so run step 2 once: if the organization has been given access since, it
+  saves the keys. If step 2 ends in `no_api_key` again, tell the user the message as it is, and stop.
+- Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
+- Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists only those the user
+  manages (owner or admin), with `credits_usd`, the prepaid balance, when they may see it; it is empty for a member.
 
 ## 2. Sign in (needs the user, once)
+
+No browser and no user at hand (a server, CI, a sandbox)? There is no sign-in there: the user makes a key in the
+console and sets `METAPHI_API_KEY` in the environment. Ask them for that, never for the key itself.
 
 ```sh
 kennet login --json
 ```
 
-It returns at once with `"status": "pending"`: nobody is signed in yet. Show the user `verification_uri_complete`
-and `user_code`, and ask them to approve it in their browser within `expires_in` seconds. Running it again while
-that code stands returns the same code. Then:
+It returns at once with `"status": "pending"`: nobody is signed in yet. It also opens the sign-in page in the
+user's default browser when this machine has one; add `--no-browser` to only print it. Show the user
+`verification_uri_complete` and `user_code` either way, and ask them to check the code matches and approve it
+within `expires_in` seconds. Running it again while that code stands returns the same code. Then:
 
 ```sh
 kennet login --complete --json
@@ -83,10 +108,10 @@ kennet login --complete --json
 
 This waits up to 60 seconds for the approval (`--timeout <seconds>` changes that). `error.code`
 `authorization_pending` means not approved yet: run it again, or stop and wait for the user to say they have.
-`"keys": true` means the organization's live and test keys are saved on this machine. `"keys": false` comes with
-`no_api_key`, the reason: tell the user, and stop.
-
-On a server or in CI there is no sign-in: `METAPHI_API_KEY` is set to a key made in the console.
+`"keys": true` means the organization's live and test keys are saved on this machine. `error.code` `no_api_key`
+means the sign-in worked and no key came with it; `error.message` says why (the organization has no access yet,
+or the user is in none). `next_step` is null: tell the user, and stop. Each sign-in replaces the keys the one
+before it saved on any machine.
 
 ## 3. Twin a file
 
@@ -96,8 +121,9 @@ kennet twin trace.json --json               # live; draws prepaid credit
 ```
 
 Result: `{{"output": "trace.twin.json", "id": "twin_..."}}`. The output is `<name>.twin<extension>` beside the input
-(`a.jsonl` gives `a.twin.jsonl`) and replaces a file already there; `-o <path>` chooses another. The input file is
-never changed.
+(`a.jsonl` gives `a.twin.jsonl`, `notes.txt` gives `notes.twin.txt`) and replaces a file already there.
+`--out <directory>` writes it there under the same name instead, which keeps twins apart from the originals;
+`-o <path>` names the file itself. The input file is never changed.
 
 The result does not list what was replaced. Before telling the user a twin is safe to share, read the output
 against the input and say what you checked.
@@ -105,9 +131,10 @@ against the input and say what you checked.
 Options that change the result:
 - `--confidential <organization>`: public organizations (a well-known company) are left as they are unless named
   here. When the trace names the user's customers or partners, ask the user which to replace. Repeatable.
-- `--key <64 hex>`: a consistency key, not an organization key. The same one gives the same person the same
-  stand-in in every file, so use one for a set of files that belong together (`openssl rand -hex 32` makes one;
-  the user keeps it, as a secret). Without it each file gets a fresh one.
+- `--key-file <path>`: a file holding a consistency key (64 hex characters), which is not an organization key.
+  The same one gives the same person the same stand-in in every file, so use one for a set of files that belong
+  together. `(umask 077; openssl rand -hex 32 > twin.key)` makes one; the user keeps it, as a secret. The
+  `KENNET_CONSISTENCY_KEY` variable is read when no file is named. Without either, each file gets a fresh one.
 
 A twin can take minutes. If your command may time out, start it and come back:
 
@@ -118,11 +145,13 @@ kennet twins get twin_... --json            # its status now: queued, running, c
 kennet twins list --json                    # the organization's twins, newest first
 ```
 
-Add `--test` to `twins` commands for twins started with `--test`. A wait that stops (timeout, interrupt) never
-stops the twin: `error.next_step` is the command that comes back for it.
+Add `--test` to `twins` commands for twins started with `--test`, and `--out <directory>` to `twins wait` as to
+`twin`. A wait that stops (timeout, interrupt) never stops the twin: `error.next_step` is the command that
+comes back for it. `--no-wait` returns once the file is uploaded and the twin exists, which takes seconds; a
+twin that then fails says so at `twins wait` or `twins get`, with the same error object.
 
-Several files: one `kennet twin` per file, with one `--key` for all of them. Start each with `--no-wait`, then
-`twins wait` each id. On `rate_limited_concurrent`, wait for one to end before starting the next.
+Several files: one `kennet twin` per file, with one `--key-file` for all of them. Start each with `--no-wait`,
+then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end before starting the next.
 
 ## 4. Errors
 
@@ -130,13 +159,17 @@ Several files: one `kennet twin` per file, with one `--key` for all of them. Sta
 | --- | --- |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
-| `no_api_key` | Signed in, but the organization has no key. The message says why: tell the user, stop. Signing in again does not help. |
+| `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet login`, do step 2 once: it picks the keys up if access was given since. If `next_step` is null (it came from `login`), tell the user the message and stop. |
+| `invalid_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
+| `insufficient_scope` | The key does not hold twinning access. Tell the user. |
+| `auth_unavailable`, `unavailable`, `balance_unavailable`, `unreachable` | The service could not answer; nothing was started. Wait `retry_after_s` (30 seconds when absent), run the same command once more, then stop and tell the user with the `request_id`. |
+| `run_unavailable` | The twin started and failed on Metaphi AI's side; nothing was written or charged. "Upload the trace again" means run `next_step`, `kennet twin <file>`, with the options you used before. Do that once. If it fails the same way, stop and give the user both `run_id`s. |
 | `out_of_credit` | Nothing was started. Give the user `error.action_url` to add credit, or run `kennet credits buy --amount <dollars> --no-browser`, show them the Stripe link it prints, and let it wait for the payment. Then run the same command again. Never choose the amount yourself. |
 | `rate_limited_concurrent`, `rate_limited_daily` | Too many runs at once, or today. Wait for a run to end, or tell the user. |
 | `timed_out` | The twin goes on. Run `next_step`. |
-| `twin_unclean`, `session_failed` | The run failed and cost nothing. If `retryable`, run it once more; else tell the user with the `request_id`. |
+| `twin_unclean`, `session_failed` | The run failed and cost nothing. If `retryable`, run it once more; else tell the user with the `run_id`. |
 | `not_text`, `too_large` | The file cannot be twinned as it is. Tell the user. |
-| anything else | If `retryable` is true, try once more after a pause. Else tell the user the message and `request_id`. |
+| anything else | If `retryable` is true, wait `retry_after_s` (10 seconds when absent) and try once more. Else, or if it fails again, tell the user the message and `request_id`. |
 
 ## 5. Balance
 
