@@ -199,8 +199,8 @@ version never changes; a fix is a new version. Each task is a Harbor bundle (`ta
 kennet delivery list --json                         # {{"data": [{{"id", "delivered", "task_count", "image_count", "bytes", "newer", "registry"}}]}}
 kennet delivery show eswe-mini@0.1.0 --json         # the same, and "tasks": [{{"name", "tree", "images", "cpus", "memory_mb", "agent_timeout_s", "verifier_timeout_s", ...}}]
 kennet delivery pull eswe-mini@0.1.0 --json         # into ./eswe-mini-0.1.0 (or --to <dir>); {{"dir", "lock", "fetched", "unchanged", "bytes", "next_step"}}
-kennet delivery verify ./eswe-mini-0.1.0 --json     # offline; exit 0 and "ok": true, or exit 1 with "differ" and "added"
-kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "removed", "changed": [{{"name", "grading_changed", "files"}}]}}
+kennet delivery verify ./eswe-mini-0.1.0 --json     # offline; exit 0 and "ok": true, or exit 1 with "differ" (per file: "delivered" and "here" sha256) and "added"
+kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "removed", "changed": [{{"name", "grading_changed", "files"}}]}}; either side can be a pulled directory
 ```
 
 - `pull` is safe to run again: it fetches only the tasks the directory does not already hold as the lock names

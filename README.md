@@ -190,6 +190,7 @@ kennet delivery show eswe-mini@0.1.0         # tasks, images, download size, wha
 kennet pull eswe-mini@0.1.0                  # into ./eswe-mini-0.1.0; run again and it fetches only what differs
 kennet verify ./eswe-mini-0.1.0              # against its lock, offline; exit 1 if anything differs
 kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1    # what changed, and whether a task's grading did
+kennet delivery diff ./eswe-mini-0.1.0 eswe-mini@0.1.1  # either side can be a pulled directory
 ```
 
 A pulled delivery is `delivery.lock.json`, `SHA256SUMS` and `tasks/<task>/`. The lock names each task's tree hash

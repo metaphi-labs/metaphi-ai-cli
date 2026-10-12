@@ -259,7 +259,7 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
             raise errors.APIError(f"the lock the service sent for {delivery} is not one this reads; nothing was "
                                   "written", code="lock_invalid")
         there = to / LOCK
-        if there.exists() and there.read_bytes() != lock_raw:
+        if there.is_file() and there.read_bytes() != lock_raw:
             other = (_read_lock(there.read_bytes()) or {}).get("delivery") or "another lock"
             raise _need(f"{to} holds {other}, not {delivery}; a delivery has its own directory", "directory_in_use",
                         f"kennet delivery pull {delivery} --to {default_dir(delivery)}")
@@ -273,7 +273,11 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
                                   "fetched": [t["name"] for t in want], "bytes": 0}
         if dry_run:
             return result
-        home.mkdir(parents=True, exist_ok=True)
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise _need(f"{to} cannot hold a delivery ({e.strerror or e}); name a directory this can write",
+                        "directory_in_use", f"kennet delivery pull {delivery} --to {default_dir(delivery)}") from None
         done = [0]
 
         def one(task: dict[str, Any]) -> int:
@@ -323,7 +327,8 @@ def verify(to: Path) -> dict[str, Any]:
             state = "as_delivered" if tree_hash(bundle, kind) == t["tree"] else "changed"
             mine = {rel[len(t["name"]) + 1:]: d for rel, d in want.items() if rel.startswith(t["name"] + "/")}
             differing = [] if state == "as_delivered" or not mine else [
-                {"path": f, "state": "missing" if f not in have else "added" if f not in mine else "changed"}
+                {"path": f, "state": "missing" if f not in have else "added" if f not in mine else "changed",
+                 "delivered": mine.get(f), "here": have.get(f)}
                 for f in sorted(mine.keys() | have.keys()) if mine.get(f) != have.get(f)]
         tasks.append({"name": t["name"], "tree": t["tree"], "state": state})
         if state != "as_delivered":
@@ -347,24 +352,48 @@ def verify(to: Path) -> dict[str, Any]:
 # -- diff: two versions, task by task ----------------------------------------------------------------------------
 
 
-def _files(delivery: str, sleep: Callable[[float], None]) -> dict[str, dict[str, str]]:
-    """{task: {path: sha256}} of a delivery's SHA256SUMS."""
+def _sums(text: str) -> dict[str, dict[str, str]]:
+    """{task: {path: sha256}} of a SHA256SUMS."""
     out: dict[str, dict[str, str]] = {}
-    for line in _get(f"/deliveries/{delivery}/sums", sleep).text.splitlines():
+    for line in text.splitlines():
         digest, _, rel = line.partition("  ")
         task, _, path = rel.partition("/")
         out.setdefault(task, {})[path] = digest
     return out
 
 
+def _side(x: str, sleep: Callable[[float], None]) -> tuple[str, dict[str, dict[str, Any]], Callable[[], dict]]:
+    """One side of a diff: its id, its tasks by name, and how to read its files. A pulled directory is read off
+    its own lock and sums, with no call anywhere; anything else is a delivery the organization holds."""
+    at = Path(x)
+    if (at / LOCK).is_file():
+        lock = _read_lock((at / LOCK).read_bytes())
+        if lock is None:
+            raise _need(f"{at} holds no {LOCK} this reads: it is not a pulled delivery", "not_a_delivery",
+                        "kennet delivery list")
+        tasks = {t["name"]: {"tree": t["tree"], "images": t.get("images", []), "grader_images": t.get("grader")}
+                 for t in lock["tasks"]}
+
+        def local() -> dict[str, dict[str, str]]:
+            try:
+                return _sums((at / SUMS).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+        return lock["delivery"], tasks, local
+    if not ID.fullmatch(x):
+        raise _need(f"{x!r} is neither a pulled delivery's directory nor a delivery (<name>@<version>)",
+                    "invalid_delivery", "kennet delivery list")
+    got = show(x, sleep)
+    return got["id"], {t["name"]: t for t in got["tasks"]}, lambda: _sums(_get(f"/deliveries/{x}/sums", sleep).text)
+
+
 def diff(a: str, b: str, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """What changed from delivery `a` to `b`, per task, and whether its grading did: a file under tests/ or an
-    image that grades. A task whose grading changed is a different measure, and scores on it do not carry over."""
-    one, two = show(a, sleep), show(b, sleep)
-    old, new = {t["name"]: t for t in one["tasks"]}, {t["name"]: t for t in two["tasks"]}
+    image that grades. Each is a delivery the organization holds or a pulled directory, read as its lock says. A task whose grading changed is a different measure, and scores on it do not carry over."""
+    (a, old, read_a), (b, new, read_b) = _side(a, sleep), _side(b, sleep)
     changed_names = [n for n in old if n in new and (old[n]["tree"] != new[n]["tree"]
                                                      or old[n]["images"] != new[n]["images"])]
-    files_a, files_b = (_files(a, sleep), _files(b, sleep)) if changed_names else ({}, {})
+    files_a, files_b = (read_a(), read_b()) if changed_names else ({}, {})
     changed = []
     for n in changed_names:
         fa, fb = files_a.get(n, {}), files_b.get(n, {})
