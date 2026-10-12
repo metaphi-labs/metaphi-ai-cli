@@ -66,11 +66,13 @@ def test_login_saves_the_live_key_and_the_test_key_it_is_handed(monkeypatch, cap
 @respx.mock
 def test_login_with_no_key_handed_over_says_why_and_still_signs_in(monkeypatch, capsys):
     config.save({"api_key": "mai_sk_mine", "test_api_key": "mai_sk_test_old"})
-    assert _login(monkeypatch, no_api_key="Acme has no synthetic twinning access yet; ask Metaphi AI for it") == 0
-    out = capsys.readouterr().out
+    # signed in, and no key: the one refusal every command makes of it, here with nothing left to run
+    assert _login(monkeypatch, no_api_key="Acme has no synthetic twinning access yet; ask Metaphi AI for it") == cli.AUTH
+    got = capsys.readouterr()
+    out = got.out
     assert "No key was saved: Acme has no synthetic twinning access yet" in out and "Ready for" not in out
     assert out.splitlines()[-1] == f"Usage, keys, members and billing: {A}/console"
-    assert "Next:" not in out   # nothing this person can run changes it
+    assert "Next:" not in out + got.err and "(code: no_api_key)" in got.err
     cfg = config.load()   # signed in; a key saved by hand stays, the last login's test key is gone
     assert cfg["token"] == "tok" and cfg["api_key"] == "mai_sk_mine" and "test_api_key" not in cfg
 
@@ -92,7 +94,7 @@ def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch,
     assert code.call_count == 1 and not token.called and "token" not in config.load()
     assert cli.main(["login", "--no-browser", "--json"]) == 0   # asked again: the code a person may hold stands
     assert json.loads(capsys.readouterr().out)["user_code"] == "ABCD-EFGH" and code.call_count == 1
-    assert cli.main(["login", "--complete", "--json", "--timeout", "1"]) == 1   # not approved yet, and said so
+    assert cli.main(["login", "--complete", "--json", "--timeout", "1"]) == cli.AUTH   # not approved yet, and said so
     error = json.loads(capsys.readouterr().out)["error"]
     assert (error["code"], error["retryable"], error["next_step"]) == ("authorization_pending", True,
                                                                          "kennet login --complete")
@@ -108,7 +110,7 @@ def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch,
 
 
 def test_login_complete_with_nothing_under_way_names_the_next_command(capsys):
-    assert cli.main(["login", "--complete", "--json"]) == 1
+    assert cli.main(["login", "--complete", "--json"]) == cli.AUTH
     out = capsys.readouterr()
     error = json.loads(out.out)["error"]
     assert (error["type"], error["code"], error["next_step"]) == ("auth_error", "login_expired", "kennet login")
@@ -117,36 +119,69 @@ def test_login_complete_with_nothing_under_way_names_the_next_command(capsys):
 
 @respx.mock
 def test_whoami_asks_the_server_and_says_the_org_the_balance_and_the_key(monkeypatch, capsys):
-    assert cli.main(["whoami", "--json"]) == 1
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "not_signed_in"
-    config.save({"token": "tok", "email": "alice@example.test", "api_key": "mai_sk_live_abcd",
+    config.save({"token": "tok", "email": "alice@example.test", "org": "acme", "api_key": "mai_sk_live_abcd",
                  "test_api_key": "mai_sk_test_wxyz"})
+    checked = respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
     orgs = respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["twin"]}])
     respx.get(f"{A}/credits/orgs").respond(json=[{"id": "acme", "credits_usd": 12.5, "can_buy": True}])
     assert cli.main(["whoami", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
-        "email": "alice@example.test",
+        "email": "alice@example.test", "org": "acme",
         "organizations": [{"id": "acme", "role": "owner", "grants": ["twin"], "credits_usd": 12.5, "can_buy": True}],
-        "key": {"source": "saved", "hint": "…abcd"}, "test_key": "…wxyz", "console": f"{A}/console"}
+        "key": {"source": "saved", "hint": "…abcd", "status": "ok"},
+        "test_key": {"source": "saved", "hint": "…wxyz", "status": "ok"}, "console": f"{A}/console"}
+    # each key was asked of the twin service, as itself
+    assert [c.request.headers["authorization"] for c in checked.calls] == ["Bearer mai_sk_live_abcd",
+                                                                           "Bearer mai_sk_test_wxyz"]
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_env_9999")
     assert cli.main(["whoami"]) == 0
     out = capsys.readouterr().out
     assert "org:    acme (owner) holds twin; $12.50 prepaid credit" in out
-    assert "key:    …9999 (METAPHI_API_KEY)" in out and "mai_sk_" not in out
+    assert "key:    …9999 (METAPHI_API_KEY): works" in out and "mai_sk_" not in out
     orgs.respond(401, json={"detail": "no"})   # a sign-in the server has ended is not "signed in"
-    assert cli.main(["whoami"]) == 1
+    assert cli.main(["whoami"]) == cli.AUTH
     assert capsys.readouterr().err.endswith("Next: kennet login\n")
 
 
-def test_signed_in_without_a_key_is_not_told_to_sign_in_again(home, capsys):
+@respx.mock
+def test_signed_in_without_a_key_is_one_refusal_everywhere_and_names_the_sign_in_that_picks_keys_up(home, capsys):
+    """Keys are handed over at sign-in alone: once the organization has access, `kennet login` is what saves them."""
     (home / "t.json").write_text("{}")
-    config.save({"token": "tok", "email": "alice@example.test",
-                 "no_api_key": "Acme has no synthetic twinning access yet; ask Metaphi AI for it"})
-    assert cli.main(["twin", str(home / "t.json"), "--json"]) == 1
-    out = capsys.readouterr()
-    error = json.loads(out.out)["error"]
-    assert error["code"] == "no_api_key" and error["next_step"] == "kennet whoami"
-    assert "Acme has no synthetic twinning access yet" in error["message"] and "run `kennet login`" not in out.err
+    why = "Acme has no synthetic twinning access yet; ask Metaphi AI for it"
+    config.save({"token": "tok", "email": "alice@example.test", "org": "acme", "no_api_key": why})
+    respx.get(f"{A}/keys/orgs").respond(json=[])   # a member manages no organization
+    respx.get(f"{A}/credits/orgs").respond(403, json={"detail": "no"})
+    seen = []
+    for argv in (["twin", str(home / "t.json"), "--json"], ["twins", "list", "--json"], ["whoami", "--json"]):
+        assert cli.main(argv) == cli.AUTH
+        got = json.loads(capsys.readouterr().out)
+        seen.append(got)
+        error = got["error"]
+        assert (error["type"], error["code"], error["next_step"]) == ("auth_error", "no_api_key", "kennet login")
+        assert why in error["message"]
+    # whoami still says who and where: the organization the sign-in is in, though the person manages none
+    assert (seen[2]["email"], seen[2]["org"], seen[2]["organizations"], seen[2]["key"]) == (
+        "alice@example.test", "acme", [], None)
+
+
+@respx.mock
+def test_whoami_does_not_call_a_key_fine_that_the_twin_service_refuses(capsys):
+    config.save({"token": "tok", "email": "alice@example.test", "org": "acme", "api_key": "mai_sk_live_abcd",
+                 "test_api_key": "mai_sk_test_wxyz"})
+    respx.get(f"{A}/keys/orgs").respond(json=[])
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    down = {"type": "api_error", "code": "auth_unavailable", "retryable": True, "message": "could not be checked"}
+    checked = respx.get(f"{API}/twins").respond(503, json={"error": down}, headers={"retry-after": "30"})
+    assert cli.main(["whoami", "--json"]) == cli.LATER
+    got = json.loads(capsys.readouterr().out)
+    assert got["error"] == {**down, "next_step": None, "retry_after_s": 30.0}
+    assert got["key"] == {"source": "saved", "hint": "…abcd", "status": "auth_unavailable"}
+    assert checked.call_count == 2   # each key once: a 30 s wait is not waited out
+    checked.respond(401, json={"error": {"type": "auth_error", "code": "invalid_api_key", "message": "revoked"}})
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    assert json.loads(capsys.readouterr().out)["error"]["next_step"] == "kennet login"
 
 
 @respx.mock
@@ -247,10 +282,10 @@ def test_a_failed_run_raises_its_code_and_writes_nothing(home, monkeypatch, caps
               "message": "the twin did not come out clean; nothing was written or charged"}
     with respx.mock:
         _, _, got = _api(statuses=("failed",), error=failed)
-        assert _run(home, monkeypatch, "--json") == 1
+        assert _run(home, monkeypatch, "--json") == cli.FAILED
         assert not got.called
     out = capsys.readouterr()
-    assert json.loads(out.out) == {"error": {**failed, "run_id": "twin_t1"}}   # the failed twin, named
+    assert json.loads(out.out) == {"error": {**failed, "run_id": "twin_t1", "next_step": None}}   # the twin, named
     assert "(code: twin_unclean)" in out.err
     assert [p.name for p in home.iterdir() if p.is_file()] == ["trace.json"]
 
@@ -280,9 +315,9 @@ def test_json_puts_the_error_object_on_stdout(home, monkeypatch, capsys):
                "request_id": "req_2", "message": "3 runs are already going for this organization"}
     with respx.mock:
         made, _, _ = _api(created=httpx.Response(429, json={"error": limited}, headers={"retry-after": "60"}))
-        assert _run(home, monkeypatch, "--json") == 1
+        assert _run(home, monkeypatch, "--json") == cli.LATER
         assert made.call_count == 1          # a rate limit is the caller's to wait out
-    assert json.loads(capsys.readouterr().out) == {"error": limited}
+    assert json.loads(capsys.readouterr().out) == {"error": {**limited, "next_step": None, "retry_after_s": 60.0}}
 
 
 @respx.mock
@@ -299,7 +334,42 @@ def test_a_dropped_upload_is_retried_with_the_same_idempotency_key(home, monkeyp
     twin.twin(home / "trace.json", say=lambda s: None, sleep=slept.append)
     keys = {c.request.headers["idempotency-key"] for c in made.calls}
     assert made.call_count == 3 and len(keys) == 1
-    assert slept[:2] == [1.0, 2.0]
+    assert 0 <= slept[0] <= twin.BASE_S and slept[1] == 2.0   # full jitter, then the wait the service named
+
+
+UNAVAILABLE = {"type": "api_error", "code": "auth_unavailable", "retryable": True,
+               "message": "the API key could not be checked just now; nothing was started; try again in a minute"}
+
+
+def test_an_unavailable_service_is_said_at_once_with_how_long_to_wait(home, monkeypatch, capsys):
+    """An agent's own clock is short: a 30 s Retry-After is handed over, not slept through four times."""
+    with respx.mock:
+        made, _, _ = _api(created=httpx.Response(503, json={"error": UNAVAILABLE}, headers={"retry-after": "30"}))
+        assert _run(home, monkeypatch, "--json", "--no-wait") == cli.LATER
+        assert made.call_count == 1
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"error": {**UNAVAILABLE, "next_step": None, "retry_after_s": 30.0}}
+    assert out.err.endswith("Try again in 30s.\n")
+
+
+@respx.mock
+def test_retries_are_few_jittered_and_end_within_the_budget(home, monkeypatch):
+    made, _, _ = _api(created=httpx.Response(503, json={"error": UNAVAILABLE}))
+    (home / "trace.json").write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    slept = []
+    with pytest.raises(errors.APIError) as e:
+        twin.twin(home / "trace.json", say=lambda s: None, sleep=slept.append)
+    assert made.call_count == 1 + twin.RETRIES and e.value.retry_after_s is None
+    assert len({c.request.headers["idempotency-key"] for c in made.calls}) == 1
+    assert [w <= twin.BASE_S * 2 ** n for n, w in enumerate(slept)] == [True] * twin.RETRIES
+    assert sum(twin.BASE_S * 2 ** n for n in range(twin.RETRIES)) < twin.BUDGET_S
+    # a budget already spent (a slow answer) leaves no retry
+    monkeypatch.setattr(twin, "BUDGET_S", 0.0)
+    before = made.call_count
+    with pytest.raises(errors.APIError):
+        twin.twin(home / "trace.json", say=lambda s: None, sleep=slept.append)
+    assert made.call_count == before + 1
 
 
 def test_an_idempotency_conflict_is_its_own_type():
@@ -321,10 +391,10 @@ def test_an_uncoded_answer_is_a_plain_error(home, monkeypatch):
 
 def test_twin_without_a_key_says_how_to_get_one(home, capsys):
     (home / "t.json").write_text("{}")
-    assert cli.main(["twin", str(home / "t.json")]) == 1
+    assert cli.main(["twin", str(home / "t.json")]) == cli.AUTH
     assert "no key: run `kennet login`, or set METAPHI_API_KEY" in capsys.readouterr().err
     config.save({"api_key": "mai_sk_live"})   # a live key alone never stands in for the test key
-    assert cli.main(["twin", str(home / "t.json"), "--test"]) == 1
+    assert cli.main(["twin", str(home / "t.json"), "--test"]) == cli.AUTH
     assert "no test key: run `kennet login`" in capsys.readouterr().err
 
 
@@ -612,3 +682,68 @@ def test_the_guide_names_only_commands_and_flags_the_parser_takes(capsys):
     for code in ("not_signed_in", "no_api_key", "login_expired", "login_refused", "authorization_pending",
                  "timed_out", "out_of_credit"):
         assert f"`{code}`" in guide   # each code the CLI or the service says has its row
+
+
+@respx.mock
+def test_the_consistency_key_comes_from_a_file_or_the_environment_and_stays_off_the_command_line(home, monkeypatch):
+    made, _, _ = _api(statuses=("completed",) * 3)
+    sent = lambda: made.calls[-1].request.content
+    (home / "k").write_text("ab" * 32 + "\n")
+    assert _run(home, monkeypatch, "--key-file", str(home / "k"), "--no-wait") == 0
+    assert b"ab" * 32 in sent()
+    monkeypatch.setenv("KENNET_CONSISTENCY_KEY", "cd" * 32)
+    assert _run(home, monkeypatch, "--no-wait") == 0
+    assert b"cd" * 32 in sent()
+    assert _run(home, monkeypatch, "--key-file", str(home / "k"), "--no-wait") == 0   # the file named wins
+    assert b"ab" * 32 in sent() and b"cd" * 32 not in sent()
+    assert _run(home, monkeypatch, "--key-file", str(home / "none"), "--no-wait") == cli.FAILED
+    with pytest.raises(SystemExit) as e:   # one or the other
+        _run(home, monkeypatch, "--key", "ab" * 32, "--key-file", str(home / "k"))
+    assert e.value.code == cli.USAGE
+
+
+@respx.mock
+def test_out_names_the_directory_a_twin_is_written_in(home, monkeypatch, capsys):
+    _api(statuses=("completed", "completed", "completed"))
+    assert _run(home, monkeypatch, "--out", str(home / "twins" / "today"), "--json") == 0
+    out = home / "twins" / "today" / "trace.twin.json"
+    assert json.loads(capsys.readouterr().out) == {"output": str(out), "id": "twin_t1"}
+    assert out.read_bytes() == b'{"user": "Morgan"}' and not (home / "trace.twin.json").exists()
+    assert cli.main(["twins", "wait", "twin_t1", "--out", str(home / "later"), "--json"]) == 0
+    assert (home / "later" / "trace.twin.json").exists()
+    with pytest.raises(SystemExit) as e:
+        cli.main(["twin", "trace.json", "-o", "a.json", "--out", "d"])
+    assert e.value.code == cli.USAGE
+
+
+def test_a_retryable_failed_run_names_the_command_that_twins_the_file_again(home, monkeypatch, capsys):
+    failed = {"type": "api_error", "code": "run_unavailable", "retryable": True,
+              "message": "the run could not be carried out; nothing was written or charged; upload the trace again "
+                         "to retry"}
+    with respx.mock:
+        _api(statuses=("failed",), error=failed)
+        assert _run(home, monkeypatch, "--json", "--test") == cli.LATER
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["run_id"] == "twin_t1" and error["next_step"] == f"kennet twin {home / 'trace.json'} --test"
+
+
+def test_exit_status_says_what_kind_of_failure(home):
+    assert (cli.FAILED, cli.USAGE, cli.AUTH, cli.LATER) == (1, 2, 3, 4)
+    assert cli.status(accounts.need("m", "not_signed_in", "kennet login")) == cli.AUTH
+    assert cli.status(errors.AuthError("m", code="invalid_api_key")) == cli.AUTH
+    assert cli.status(errors.APIError("m", code="auth_unavailable", retryable=True)) == cli.LATER
+    assert cli.status(errors.RateLimitError("m", code="rate_limited_daily")) == cli.LATER
+    assert cli.status(errors.BillingError("m", code="out_of_credit")) == cli.FAILED
+    assert cli.status(errors.RunError("m", code="twin_unclean")) == cli.FAILED
+    with pytest.raises(SystemExit) as e:
+        cli.main(["twin"])
+    assert e.value.code == cli.USAGE
+    for line in ("3 sign-in or key needed", "4 try the same call later"):
+        assert line in cli.EXAMPLES
+    assert "| 3 |" in skill.GUIDE and "| 4 |" in skill.GUIDE
+
+
+def test_every_error_object_says_its_next_step_even_when_there_is_none():
+    assert errors.APIError("m").to_dict()["next_step"] is None
+    assert errors.from_object({"type": "api_error", "code": "unavailable", "message": "m"}).to_dict() == {
+        "type": "api_error", "code": "unavailable", "message": "m", "retryable": False, "next_step": None}

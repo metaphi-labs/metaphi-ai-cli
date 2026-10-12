@@ -345,7 +345,7 @@ wheels = [
 
 [[package]]
 name = "metaphi-ai"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

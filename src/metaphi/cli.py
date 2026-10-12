@@ -6,6 +6,9 @@
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
 the result (or the error object) alone on stdout while progress goes to stderr, and an error that one command
 clears names that command (`Next: ...`, `next_step` in JSON).
+
+Exit status: 0 done; 1 failed; 2 the command line was wrong; 3 a sign-in or a key is needed (`AUTH`); 4 the same
+call may work later (`LATER`: the service is unavailable, rate limited, or a wait ran out).
 """
 from __future__ import annotations
 
@@ -17,9 +20,19 @@ import os
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from metaphi import __version__, accounts, config, errors, skill
+
+FAILED, USAGE, AUTH, LATER = 1, 2, 3, 4
+
+
+def status(error: errors.MetaphiError) -> int:
+    """The exit status an error ends the command with."""
+    if error.type == "auth_error":
+        return AUTH
+    return LATER if error.retryable or error.type == "rate_limit_error" else FAILED
 
 
 class _OnArgv(argparse.Action):
@@ -68,12 +81,16 @@ def _signed_in(a: argparse.Namespace, got: dict) -> None:
              "" if skill.installed() else "Working through Claude Code? `kennet skill install` teaches it this CLI.",
              f"Usage, keys, members and billing: {console}")
         return
+    # signed in, and handed no key: the same refusal `whoami` and `twin` make, with nothing here left to run
     why = got.get("no_api_key") or "the server sent none"
-    _out(a, {"email": got.get("email"), "org": got.get("org"), "keys": False, "no_api_key": why, "console": console},
-         f"Signed in as {got.get('email')}.",
-         f"No key was saved: {why}.",
-         "Signing in again changes nothing until that does; then `kennet login` hands the keys over.",
-         f"Usage, keys, members and billing: {console}")
+    if not a.json:
+        print("\n".join((f"Signed in as {got.get('email')}.", f"No key was saved: {why}.",
+                         "Signing in again changes nothing until that does; then `kennet login` hands the keys over.",
+                         f"Usage, keys, members and billing: {console}")))
+    from metaphi.twin import no_key
+    e = no_key({"no_api_key": why, "email": got.get("email")}, again=False)
+    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False, "console": console}
+    raise e
 
 
 def cmd_login(a: argparse.Namespace) -> None:
@@ -118,37 +135,61 @@ def _hint(key: str | None) -> str | None:
     return f"…{key[-4:]}" if key else None
 
 
+def _key_status(key: str | None, source: str) -> tuple[dict | None, errors.MetaphiError | None]:
+    """A key as `whoami` shows it, {source, hint, status}, asked of the twin service: `status` is "ok" or the
+    code a call on it would meet now; and that error."""
+    if not key:
+        return None, None
+    from metaphi.twin import check
+    e = check(key)
+    return {"source": source, "hint": _hint(key), "status": "ok" if e is None else e.code or "error"}, e
+
+
 def cmd_whoami(a: argparse.Namespace) -> None:
-    """Who the server says this machine is, not what the config file remembers."""
+    """Who the servers say this machine is, not what the config file remembers: accounts for the person and their
+    organizations, the twin service for each key."""
     cfg = config.load()
     env = os.environ.get("METAPHI_API_KEY")
     key = env or cfg.get("api_key")
     if not cfg.get("token") and not key:
         raise accounts.need("not signed in; run `kennet login`", "not_signed_in", "kennet login")
     orgs, credit = [], {}
-    if cfg.get("token"):
-        orgs = accounts.orgs()   # a sign-in that has ended is refused here
-        with contextlib.suppress(config.Error):   # a member who is not shown the balance
-            credit = {o["id"]: o for o in accounts.org_credits()}
+    with ThreadPoolExecutor(max_workers=2) as pool:   # the keys are asked of the twin service meanwhile
+        asked = (pool.submit(_key_status, key, "METAPHI_API_KEY" if env else "saved"),
+                 pool.submit(_key_status, cfg.get("test_api_key"), "saved"))
+        if cfg.get("token"):
+            orgs = accounts.orgs()   # a sign-in that has ended is refused here
+            with contextlib.suppress(config.Error):   # a member who is not shown the balance
+                credit = {o["id"]: o for o in accounts.org_credits()}
+        (live, refused), (test, _) = asked[0].result(), asked[1].result()
     got = {"email": cfg.get("email") if cfg.get("token") else None,
+           "org": cfg.get("org") if cfg.get("token") else None,
            "organizations": [{"id": o["id"], "role": o.get("role"), "grants": o.get("grants") or [],
                               **({"credits_usd": credit[o["id"]]["credits_usd"],
                                   "can_buy": bool(credit[o["id"]].get("can_buy"))} if o["id"] in credit else {})}
                              for o in orgs],
-           "key": {"source": "METAPHI_API_KEY" if env else "saved", "hint": _hint(key)} if key else None,
-           "test_key": _hint(cfg.get("test_api_key")),
+           "key": live, "test_key": test,
            "console": f"{config.accounts_url()}/console"}
-    if not key and cfg.get("no_api_key"):
-        got["no_api_key"] = cfg["no_api_key"]
     lines = [f"person: {got['email'] or 'not signed in (a saved key only)'}"]
+    if got["org"] and got["org"] not in [o["id"] for o in got["organizations"]]:
+        lines.append(f"org:    {got['org']}")
     for o in got["organizations"]:
         lines.append(f"org:    {o['id']} ({o['role']}) holds {', '.join(o['grants']) or 'nothing yet'}"
                      + (f"; ${o['credits_usd']:,.2f} prepaid credit" if "credits_usd" in o else ""))
-    lines.append(f"key:    {got['key']['hint']} ({got['key']['source']})" if key else
-                 f"key:    none ({got.get('no_api_key') or 'run `kennet login`'})")
-    if got["test_key"]:
-        lines.append(f"test:   {got['test_key']}")
-    _out(a, got, *lines)
+    said = {"ok": "works"}
+    lines.append(f"key:    {live['hint']} ({live['source']}): {said.get(live['status'], live['status'])}" if live else
+                 f"key:    none ({cfg.get('no_api_key') or 'run `kennet login`'})")
+    if test:
+        lines.append(f"test:   {test['hint']}: {said.get(test['status'], test['status'])}")
+    if live and refused is None:
+        _out(a, got, *lines)
+        return
+    if not a.json:
+        print("\n".join(lines))
+    from metaphi.twin import no_key
+    error = refused or no_key(cfg)
+    error.context = got
+    raise error
 
 
 def _seconds(said: str) -> float:
@@ -162,14 +203,15 @@ def _seconds(said: str) -> float:
 
 
 def cmd_twin(a: argparse.Namespace) -> None:
-    from metaphi.twin import twin
+    from metaphi.twin import consistency_key, twin
     say = _progress(a)
     key = uuid.uuid4().hex  # one Idempotency-Key for both attempts: the retry after a top-up cannot start a second run
 
     def run() -> dict:
-        return twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
+        return twin(Path(a.file), Path(a.output) if a.output else None, a.api_key,
+                    consistency_key(a.key, Path(a.key_file) if a.key_file else None),
                     a.confidential, say=say, deadline_s=a.timeout, test=a.test, idempotency_key=key,
-                    detach=a.no_wait)
+                    detach=a.no_wait, out_dir=Path(a.out) if a.out else None)
     try:
         got = run()
     except errors.BillingError as e:
@@ -204,7 +246,8 @@ def cmd_twins_get(a: argparse.Namespace) -> None:
 
 def cmd_twins_wait(a: argparse.Namespace) -> None:
     from metaphi.twin import wait
-    got = wait(a.id, Path(a.output) if a.output else None, say=_progress(a), deadline_s=a.timeout, test=a.test)
+    got = wait(a.id, Path(a.output) if a.output else None, say=_progress(a), deadline_s=a.timeout, test=a.test,
+               out_dir=Path(a.out) if a.out else None)
     if a.json:
         print(json.dumps(got, indent=2))
 
@@ -305,6 +348,7 @@ examples:
   kennet whoami                     who you are, your organization, its balance, the key in use
   kennet twin trace.json --test     a free test twin, written to trace.twin.json
   kennet twin trace.json --no-wait  start a twin and return its id
+  kennet twin trace.json --out twins/   write the twin into a directory
   kennet twins list                 your organization's twins, newest first
   kennet twins wait twin_...        come back for a twin: wait until it ends, write its file
 
@@ -313,6 +357,9 @@ from an agent or a script (no terminal): add --json; stdout is then the result o
   kennet skill show                 the guide an agent follows, for this version
   kennet login --json               prints the page and the code, and returns
   kennet login --complete           waits for the approval, saves the keys
+  METAPHI_API_KEY=mai_sk_... kennet twin trace.json --json    no sign-in: a key from the console
+
+exit status: 0 done, 1 failed, 2 usage, 3 sign-in or key needed, 4 try the same call later
 """
 
 
@@ -346,8 +393,8 @@ def parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_login)
     sub.add_parser("logout", help="sign out everywhere this sign-in is used, and revoke its keys").set_defaults(
         fn=cmd_logout)
-    s = sub.add_parser("whoami", help="who the server says you are: your organizations, their balance, the key "
-                       "in use")
+    s = sub.add_parser("whoami", help="who the servers say you are: your organizations, their balance, and whether "
+                       "the key in use works")
     _json_flag(s)
     s.set_defaults(fn=cmd_whoami)
 
@@ -364,8 +411,15 @@ def parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("twin", help="twin a trace (JSON, JSON Lines or text)")
     s.add_argument("file")
-    s.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext>)")
-    s.add_argument("--key", help="64 hex characters: the same key gives a person the same stand-in in every trace")
+    where = s.add_mutually_exclusive_group()
+    where.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext> beside the file)")
+    where.add_argument("--out", metavar="DIR", help="the directory the twin goes in, as <name>.twin<ext>; made if "
+                       "missing")
+    keyed = s.add_mutually_exclusive_group()
+    keyed.add_argument("--key-file", metavar="PATH", help="a file holding the consistency key (64 hex characters): "
+                       "the same key gives a person the same stand-in in every trace. KENNET_CONSISTENCY_KEY is "
+                       "read when neither this nor --key is given")
+    keyed.add_argument("--key", help="the consistency key itself; it shows in the process list, so prefer --key-file")
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
     s.add_argument("--test", action="store_true",
                    help="run on the test key `kennet login` saved: free, small, kept apart from live twins")
@@ -388,7 +442,10 @@ def parser() -> argparse.ArgumentParser:
     g.set_defaults(fn=cmd_twins_get)
     w = twins.add_parser("wait", help="wait until a twin ends and write its file")
     w.add_argument("id")
-    w.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext> here)")
+    where = w.add_mutually_exclusive_group()
+    where.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext> here)")
+    where.add_argument("--out", metavar="DIR", help="the directory the twin goes in, as <name>.twin<ext>; made if "
+                       "missing")
     w.add_argument("--timeout", type=_seconds, help="seconds to wait (default METAPHI_TWIN_TIMEOUT, or 7200)")
     w.set_defaults(fn=cmd_twins_wait)
     for verb in (v, g, w):
@@ -434,15 +491,19 @@ def main(argv: list[str] | None = None) -> int:
         if error.code == "out_of_credit":  # where it is paid, and the command that pays it and waits
             error.action_url = _credit_url(error)
             error.next_step = None if advice else "kennet credits buy"
+        elif error.code in ("invalid_api_key", "missing_api_key"):   # a key revoked or replaced: a sign-in saves new ones
+            error.next_step = "kennet login"
         if getattr(a, "json", False):
-            print(json.dumps({"error": error.to_dict()}, indent=2))
+            print(json.dumps({"error": error.to_dict(), **error.context}, indent=2))
         print(f"error: {error}", file=sys.stderr)
         if error.code == "out_of_credit":
             print(advice or f"Add credit: {error.action_url}  or run: kennet credits buy --amount <amount>",
                   file=sys.stderr)
         elif error.next_step:
             print(f"Next: {error.next_step}", file=sys.stderr)
-        return 1
+        elif error.retry_after_s is not None:
+            print(f"Try again in {error.retry_after_s:.0f}s.", file=sys.stderr)
+        return status(error)
     except KeyboardInterrupt:
         return 130
     return 0

@@ -55,7 +55,7 @@ alone, and progress goes to stderr. An error that one command clears names it: `
 kennet login --json           # {"verification_uri", "user_code", "expires_in", "next_step": "kennet login --complete"}
                                # the person opens the page and confirms the code
 kennet login --complete       # waits for the approval (60 s away from a terminal) and saves the keys; safe to run again
-kennet whoami --json          # asks the server: email, organizations (role, grants, balance), the key in use
+kennet whoami --json          # asks the servers: email, organization, balance, and whether each key works
 kennet twin trace.json --no-wait --json    # {"id", "status", "next_step": "kennet twins wait twin_..."}
 kennet twins wait twin_... --json          # {"output", "id"} once it ends
 kennet twins list --json      # the organization's twins, newest first
@@ -98,8 +98,9 @@ One key per environment (`prod`, `staging`) or per customer is a good default. R
 
 | Flag | What it does |
 | --- | --- |
-| `-o, --output` | Where the twinned trace goes. Default: `<name>.twin<ext>`. |
-| `--key <64 hex>` | Keys the stand-in values. The same key gives a person the same stand-in in every trace, so a corpus stays consistent. Default: a fresh key per trace. |
+| `-o, --output` | Where the twinned trace goes. Default: `<name>.twin<ext>` beside the input. |
+| `--out <dir>` | The directory the twin goes in, as `<name>.twin<ext>`; made if missing. |
+| `--key-file <path>` | A file holding the consistency key (64 hex characters). The same key gives a person the same stand-in in every trace, so a corpus stays consistent. `KENNET_CONSISTENCY_KEY` is read when no file is named. Default: a fresh key per trace. (`--key <64 hex>` takes it as an argument, where the process list shows it.) |
 | `--confidential <org>` | Replaces an organization even though it is public, e.g. your customer. Repeatable. |
 | `--test` | Runs on the test key `kennet login` saved: free, small, apart from live twins. |
 | `--no-wait` | Starts the twin and returns its id; `kennet twins wait <id>` comes back for it. |
@@ -114,15 +115,29 @@ the same kind, and the trace keeps its structure. An adversarial pass then reads
 ### Errors
 
 Every error from the service carries a stable `code`. Switch on the code or the exception class, never on the
-message. On a failure the CLI exits 1 and prints:
+message. On a failure the CLI prints:
 
 ```
 error: This organization's prepaid balance is used up; add credits to continue. Nothing was started. (code: out_of_credit, request: req_5f1c...)
 ```
 
-With `--json`, stdout also gets the error object: `{"error": {"type", "code", "message", "retryable", "request_id"}}`,
-plus `run_id` when a run failed, `action_url` when a page fixes it and `next_step` when a command does. Quote the
-`request_id` to support.
+With `--json`, stdout also gets the error object:
+`{"error": {"type", "code", "message", "retryable", "next_step", "request_id"}}`, plus `run_id` when a run failed,
+`action_url` when a page fixes it and `retry_after_s` when the service said how long to wait. `next_step` is the
+command that clears the error, or `null` when none does. Quote the `request_id` to support.
+
+The exit status says what kind of end it was:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Done. |
+| 1 | Failed. |
+| 2 | The command line was wrong. |
+| 3 | A sign-in or a key is needed (`auth_error`). |
+| 4 | The same call may work later: the service is unavailable, a limit is reached, or a wait ran out. |
+
+A request that fails in transit or with a retryable error is sent again at most twice, within 5 seconds in all;
+a longer `Retry-After` is handed back as `retry_after_s`, not waited out.
 
 From Python, each error `type` raises its own class from `metaphi.errors`. All of them subclass `MetaphiError`:
 
@@ -161,7 +176,8 @@ but for the last:
 | --- | --- | --- |
 | `not_signed_in` | no sign-in on this machine, or the server has ended it | `kennet login` |
 | `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
-| `no_api_key` | signed in, but the organization was handed no key; the message says why | `kennet whoami` |
+| `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet login` (`null` from `login` itself) |
+| `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
 
@@ -169,8 +185,10 @@ Any other error the CLI says itself, such as a file that is not there, is a plai
 
 ## Your organization
 
-`kennet whoami` asks the server who you are: your organizations, your role and what each may do, its prepaid balance
-when you may see it, and which key calls run on (the saved one, or `METAPHI_API_KEY`), by its last four characters.
+`kennet whoami` asks the servers who you are: your organization, the organizations you manage with your role and
+what each may do, the prepaid balance when you may see it, and which key calls run on (the saved one, or
+`METAPHI_API_KEY`), by its last four characters. It asks the twin service whether each key works, and exits 0 only
+when the one in use does.
 A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
 the console at <https://app.metaphi.ai/console>.
 

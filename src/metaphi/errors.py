@@ -5,7 +5,9 @@ action_url when there is a page that fixes it (`out_of_credit`: where credit is 
 `type` picks the class (`BillingError` for `billing_error`, and so on); `code` is the stable reason, as `out_of_credit`
 or `rate_limited_concurrent`; `request_id` is what support looks the call up by. An error the CLI says itself carries
 its own code where there is one thing to do about it (`not_signed_in`, `no_api_key`, `login_expired`) and that thing
-as `next_step`, a command to run; one a server answers without a code is a plain `MetaphiError` with `code` None."""
+as `next_step`, a command to run; one a server answers without a code is a plain `MetaphiError` with `code` None.
+`next_step` is in every error object, null when no command clears it; `retry_after_s` is how long the service
+said to wait, when it said."""
 from __future__ import annotations
 
 from typing import Any
@@ -20,7 +22,7 @@ class MetaphiError(config.Error):
 
     def __init__(self, message: str, code: str | None = None, type: str | None = None, retryable: bool = False,
                  request_id: str | None = None, run_id: str | None = None, action_url: str | None = None,
-                 next_step: str | None = None) -> None:
+                 next_step: str | None = None, retry_after_s: float | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
@@ -30,13 +32,17 @@ class MetaphiError(config.Error):
         self.run_id = run_id
         self.action_url = action_url
         self.next_step = next_step   # the command that clears it, when the CLI knows one
+        self.retry_after_s = retry_after_s   # seconds the service said to wait before the same call
+        self.context: dict[str, Any] = {}    # what the command knew when it failed, beside `error` under --json
 
     def to_dict(self) -> dict[str, Any]:
         """The error object, as the service said it."""
         out: dict[str, Any] = {"type": self.type, "code": self.code, "message": self.message,
-                               "retryable": self.retryable}
+                               "retryable": self.retryable, "next_step": self.next_step}
         out.update({k: v for k, v in (("request_id", self.request_id), ("run_id", self.run_id),
-                                      ("action_url", self.action_url), ("next_step", self.next_step)) if v})
+                                      ("action_url", self.action_url)) if v})
+        if self.retry_after_s is not None:
+            out["retry_after_s"] = self.retry_after_s
         return out
 
     def __str__(self) -> str:
