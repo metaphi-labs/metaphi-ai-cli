@@ -180,6 +180,22 @@ but for the last:
 
 Any other error the CLI says itself, such as a file that is not there, is a plain `MetaphiError` with `code` `None`.
 
+## Task deliveries
+
+The task sets your organization holds, each a versioned set of Harbor tasks with its images pinned by digest.
+
+```sh
+kennet delivery list                         # what you hold, newest first
+kennet delivery show eswe-mini@0.1.0         # tasks, images, download size, what a run asks
+kennet pull eswe-mini@0.1.0                  # into ./eswe-mini-0.1.0; run again and it fetches only what differs
+kennet verify ./eswe-mini-0.1.0              # against its lock, offline; exit 1 if anything differs
+kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1    # what changed, and whether a task's grading did
+```
+
+A pulled delivery is `delivery.lock.json`, `SHA256SUMS` and `tasks/<task>/`. The lock names each task's tree hash
+and its images by digest; `verify` needs that directory and nothing else. A version never changes: a fix is a new
+version, shown as `newer` by `list`. You run the tasks with Harbor on your own machines.
+
 ## Your organization
 
 `kennet whoami` asks the servers who you are: your organization, the organizations you manage with your role and

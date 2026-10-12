@@ -15,7 +15,7 @@ MARK = "<!-- written by `kennet skill install`; edits are overwritten -->"
 
 STUB = f"""---
 name: {NAME}
-description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`. Today that is synthetic twinning of agent traces. Use when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
+description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds. Use when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
 ---
 {MARK}
 
@@ -33,7 +33,8 @@ pip install metaphi-ai                   # anywhere with Python 3.10+
 
 GUIDE = f"""# Kennet from the command line (kennet {__version__})
 
-Kennet is Metaphi AI's RL infrastructure. What it offers customers through this CLI today is synthetic twinning.
+Kennet is Metaphi AI's RL infrastructure. Through this CLI it offers synthetic twinning (steps 3 to 5) and the
+task sets your organization holds, its deliveries (step 6). Steps 1 and 2, the sign-in, are the same for both.
 
 `kennet twin <file>` uploads one trace file (JSON, JSON Lines or text) to Metaphi AI's service and writes its
 synthetic twin beside it: the same file, same structure, with every real person, private organization, account
@@ -170,7 +171,7 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
 | `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet org create <name>`, the user is in no organization: make theirs (step 1). If it is `kennet login`, run `kennet login --json` once: it picks the keys up, with no browser, if access was given since. If it comes back `no_api_key` again, tell the user the message and stop. |
 | `invalid_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
-| `insufficient_scope` | The key does not hold twinning access. Tell the user. |
+| `insufficient_scope` | The key does not hold access to what the command reaches. Run `kennet login --json` once: a signed-in machine is handed new keys with no browser. If it repeats, tell the user. |
 | `auth_unavailable`, `unavailable`, `balance_unavailable`, `unreachable` | The service could not answer; nothing was started. Wait `retry_after_s` (30 seconds when absent), run the same command once more, then stop and tell the user with the `request_id`. |
 | `run_unavailable` | The twin started and failed on Metaphi AI's side; nothing was written or charged. "Upload the trace again" means run `next_step`, `kennet twin <file>`, with the options you used before. Do that once. If it fails the same way, stop and give the user both `run_id`s. |
 | `out_of_credit` | Nothing was started. Give the user `error.action_url` to add credit, or run `kennet credits buy --amount <dollars> --no-browser`, show them the Stripe link it prints, and let it wait for the payment. Then run the same command again. Never choose the amount yourself. |
@@ -187,6 +188,51 @@ kennet credits --json                       # {{"org", "credits_usd", "can_buy"}
 ```
 
 Only owners, admins and billing members see it; anyone else gets an error saying so.
+
+## 6. Task deliveries
+
+A delivery is a versioned set of RL tasks your organization holds: `<name>@<version>`, as `eswe-mini@0.1.0`. A
+version never changes; a fix is a new version. Each task is a Harbor bundle (`task.toml`, `instruction.md`,
+`environment/`, `tests/`, `solution/`) whose images are pinned by digest.
+
+```sh
+kennet delivery list --json                         # {{"data": [{{"id", "delivered", "task_count", "image_count", "bytes", "newer", "registry"}}]}}
+kennet delivery show eswe-mini@0.1.0 --json         # the same, and "tasks": [{{"name", "tree", "images", "cpus", "memory_mb", "agent_timeout_s", "verifier_timeout_s", ...}}]
+kennet delivery pull eswe-mini@0.1.0 --json         # into ./eswe-mini-0.1.0 (or --to <dir>); {{"dir", "lock", "fetched", "unchanged", "bytes", "next_step"}}
+kennet delivery verify ./eswe-mini-0.1.0 --json     # offline; exit 0 and "ok": true, or exit 1 with "differ" and "added"
+kennet delivery diff eswe-mini@0.1.0 eswe-mini@0.1.1 --json   # {{"added", "removed", "changed": [{{"name", "grading_changed", "files"}}]}}
+```
+
+- `pull` is safe to run again: it fetches only the tasks the directory does not already hold as the lock names
+  them. A task that was changed is put back whole, as delivered, and anything added inside it goes: keep your
+  own files (results, notes, solutions) outside the delivery's directory. `--dry-run` names the tasks it would
+  fetch and so replace. A pull that stopped is finished by the same command.
+- The pulled directory is `delivery.lock.json`, `SHA256SUMS` and `tasks/<task>/`. The lock is the record: each
+  task's `tree` (a SHA-256 over every file's hash, mode and path) and its `images` by digest. `verify` reads that directory
+  and nothing else, so it works with no key and no network, on the training machine too. Run it before a run,
+  and treat exit 1 as "these are not the tasks that were delivered": pull again before running.
+- Size the sandboxes from `show`: a task's `cpus`, `memory_mb`, `storage_mb`, `agent_timeout_s` and
+  `verifier_timeout_s` are what it asks. A sandbox smaller than that fails for reasons that are not the model's.
+- Images are in `registry`, your organization's own image repository, and a task runs only against the digests
+  its lock names: never pull one by tag. Your organization pulls with the service account it gave Metaphi AI;
+  fetch the images before a run, since the tasks run with no internet.
+- Run the tasks with Harbor on your own machines; nothing of Metaphi AI is called at run time. Keep the bundle
+  as it is: `tests/` and `solution/` must never be put where the agent being trained can read them.
+- With every result you keep, record the delivery id and the task's `tree`. Scores compare only within one
+  version, and `diff` says, per task, whether its grading changed (`grading_changed`): if it did, scores on
+  that task from the older version do not carry over.
+- A trial whose verifier output starts with `verifier error:` or `ungradable:` was not graded, although its
+  reward reads 0. Do not train on it and do not count it as a wrong answer: run it again, and if it repeats,
+  tell the user which task and which delivery.
+- `newer` on a delivery names a later version your organization holds. A held-out set, when there is one, is a
+  delivery of its own and is never part of a training pull.
+
+Errors: `resource_missing` (no such delivery for your organization; `kennet delivery list`),
+`insufficient_scope` (this machine's keys predate deliveries; `kennet login --json` replaces them, with no
+browser), `directory_in_use` (the directory holds another delivery; `next_step` names a free one),
+`tree_mismatch` (a download was not the locked tree and was thrown away; run the pull again),
+`not_a_delivery` (`verify` was pointed at a directory with no lock it can read), `invalid_delivery` (the id is
+not `<name>@<version>`), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 """
 
 

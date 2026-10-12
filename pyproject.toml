@@ -1,7 +1,7 @@
 [project]
 name = "metaphi-ai"
-version = "0.1.10"
-description = "The Metaphi AI command line: sign in and twin traces."
+version = "0.1.11"
+description = "The Metaphi AI command line: sign in, twin traces, and pull the task sets your organization holds."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
