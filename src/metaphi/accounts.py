@@ -118,13 +118,14 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
                 if not isinstance(body.get("access_token"), str):
                     raise Error("the sign-in server sent no access token")
                 cfg = config.load()
-                for name in ("pending", "device_code", "test_api_key", "org", "no_api_key"):
+                for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code"):
                     cfg.pop(name, None)  # the server revoked the last login's keys
                 cfg.update({"token": body["access_token"], "email": body.get("email")})
                 if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
                     cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
                 # why whoami and twin can say, later, what this sign-in was and was not given
-                cfg.update({k: body[k] for k in ("org", "no_api_key") if isinstance(body.get(k), str) and body[k]})
+                cfg.update({k: body[k] for k in ("org", "no_api_key", "no_api_key_code")
+                            if isinstance(body.get(k), str) and body[k]})
                 config.save(cfg)
                 return body
             error = body.get("error")
@@ -166,7 +167,8 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
 def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
-    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "pending", "device_code"):
+    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "pending",
+                 "device_code"):
         cfg.pop(name, None)
     config.save(cfg)
     if token:
@@ -194,6 +196,21 @@ def call(method: str, path: str, **kw: Any) -> Any:
 
 def orgs() -> list[dict[str, Any]]:
     return call("GET", "/keys/orgs")
+
+
+def create_org(name: str) -> dict[str, Any]:
+    """Make the signed-in person's organization: they own it, and it asks Metaphi AI to be approved for Kennet
+    (`admission` is "pending" until it is, "admitted" after). What a later command says of the sign-in follows."""
+    made = call("POST", "/keys/orgs", json={"name": name})
+    if not (isinstance(made, dict) and isinstance(made.get("id"), str)):
+        raise Error("the server sent no organization")
+    cfg = config.load()
+    cfg["org"] = made["id"]
+    if isinstance(made.get("message"), str):
+        cfg["no_api_key"] = made["message"].rstrip(".")
+    cfg["no_api_key_code"] = "no_keys_yet" if made.get("admission") == "admitted" else "awaiting_approval"
+    config.save(cfg)
+    return made
 
 
 def org_credits() -> list[dict[str, Any]]:

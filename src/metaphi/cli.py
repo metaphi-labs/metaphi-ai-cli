@@ -1,6 +1,7 @@
 """kennet: the command line for Kennet, Metaphi AI's RL infrastructure.
 
     kennet login                        sign in through the browser; your organization's keys come with it
+    kennet org create "Acme"            make your organization, if you are in none; Metaphi AI approves it
     kennet twin trace.json              twin a trace with that key
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
@@ -88,8 +89,10 @@ def _signed_in(a: argparse.Namespace, got: dict) -> None:
                          "Signing in again changes nothing until that does; then `kennet login` hands the keys over.",
                          f"Usage, keys, members and billing: {console}")))
     from metaphi.twin import no_key
-    e = no_key({"no_api_key": why, "email": got.get("email")}, again=False)
-    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False, "console": console}
+    e = no_key({"no_api_key": why, "email": got.get("email"), "no_api_key_code": got.get("no_api_key_code")},
+               again=False)
+    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False, "console": console,
+                 "reason": got.get("no_api_key_code")}
     raise e
 
 
@@ -165,6 +168,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     got = {"email": cfg.get("email") if cfg.get("token") else None,
            "org": cfg.get("org") if cfg.get("token") else None,
            "organizations": [{"id": o["id"], "role": o.get("role"), "grants": o.get("grants") or [],
+                              **({"admission": o["admission"]} if o.get("admission") else {}),
                               **({"credits_usd": credit[o["id"]]["credits_usd"],
                                   "can_buy": bool(credit[o["id"]].get("can_buy"))} if o["id"] in credit else {})}
                              for o in orgs],
@@ -174,7 +178,10 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     if got["org"] and got["org"] not in [o["id"] for o in got["organizations"]]:
         lines.append(f"org:    {got['org']}")
     for o in got["organizations"]:
-        lines.append(f"org:    {o['id']} ({o['role']}) holds {', '.join(o['grants']) or 'nothing yet'}"
+        waits = o.get("admission") == "pending"
+        lines.append(f"org:    {o['id']} ({o['role']}) "
+                     + ("waits for Metaphi AI to approve it" if waits else
+                        f"holds {', '.join(o['grants']) or 'nothing yet'}")
                      + (f"; ${o['credits_usd']:,.2f} prepaid credit" if "credits_usd" in o else ""))
     said = {"ok": "works"}
     lines.append(f"key:    {live['hint']} ({live['source']}): {said.get(live['status'], live['status'])}" if live else
@@ -314,6 +321,15 @@ def _refill(e: errors.MetaphiError) -> bool:
     return _top_up(o)
 
 
+def cmd_org_create(a: argparse.Namespace) -> None:
+    made = accounts.create_org(a.name)
+    ready = made.get("admission") == "admitted"
+    _out(a, {"id": made["id"], "name": made.get("name"), "role": made.get("role"),
+             "admission": made.get("admission"), "next_step": "kennet login" if ready else None},
+         str(made.get("message") or f"{made['id']} is made and you own it."),
+         "Next: kennet login" if ready else "")
+
+
 def cmd_credits(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     out = o["credits_usd"] <= 0
@@ -345,6 +361,7 @@ def cmd_skill_remove(a: argparse.Namespace) -> None:
 EXAMPLES = """\
 examples:
   kennet login                      sign in; your organization's keys are saved on this machine
+  kennet org create "Acme"          make your organization, if you are in none; Metaphi AI approves it
   kennet whoami                     who you are, your organization, its balance, the key in use
   kennet twin trace.json --test     a free test twin, written to trace.twin.json
   kennet twin trace.json --no-wait  start a twin and return its id
@@ -398,6 +415,15 @@ def parser() -> argparse.ArgumentParser:
     _json_flag(s)
     s.set_defaults(fn=cmd_whoami)
 
+    s = sub.add_parser("org", help="your organization: make it, if you are in none")
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
+    verbs = s.add_subparsers(dest="verb", metavar="<verb>")
+    v = verbs.add_parser("create", help="make an organization and own it; Metaphi AI approves it for Kennet and "
+                         "mails you, then `kennet login` saves its keys")
+    v.add_argument("name", help="what it is called, e.g. \"Acme Robotics\"")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_org_create)
+
     s = sub.add_parser("credits", help="your organization's prepaid balance")
     s.add_argument("--org")
     _json_flag(s)
@@ -432,7 +458,7 @@ def parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_twin)
 
     s = sub.add_parser("twins", help="your organization's twins: list them, read one, come back for one")
-    s.set_defaults(fn=lambda a: s.print_help())
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
     twins = s.add_subparsers(dest="verb", metavar="<verb>")
     v = twins.add_parser("list", help="the twins, newest first")
     v.add_argument("--limit", type=int, default=10, help="how many (default 10)")
@@ -453,7 +479,7 @@ def parser() -> argparse.ArgumentParser:
         _json_flag(verb)
 
     s = sub.add_parser("skill", help="the Kennet skill: teach a coding agent (Claude Code) this CLI")
-    s.set_defaults(fn=lambda a: s.print_help())
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
     verbs = s.add_subparsers(dest="verb", metavar="<verb>")
     v = verbs.add_parser("install", help="write the skill where Claude Code reads it (~/.claude/skills/kennet)")
     v.add_argument("--project", action="store_true", help="into this directory's .claude/skills instead, to commit "

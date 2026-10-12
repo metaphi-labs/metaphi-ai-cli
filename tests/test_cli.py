@@ -167,6 +167,47 @@ def test_signed_in_without_a_key_is_one_refusal_everywhere_and_names_the_sign_in
 
 
 @respx.mock
+def test_a_person_in_no_organization_makes_theirs_and_is_told_it_waits_for_approval(monkeypatch, capsys):
+    why = "alice@example.test is not in an organization; make yours with `kennet org create <name>`"
+    assert _login(monkeypatch, no_api_key=why, no_api_key_code="no_organization") == cli.AUTH
+    got = capsys.readouterr()
+    assert got.err.endswith("Next: kennet org create <name>\n")   # the sign-in names what clears it
+    waits = "Acme is made and you own it. It is waiting for Metaphi AI to approve it for Kennet."
+    made = respx.post(f"{A}/keys/orgs").respond(json={"id": "acme", "name": "Acme", "role": "owner",
+                                                      "admission": "pending", "message": waits})
+    assert cli.main(["org", "create", "Acme", "--json"]) == 0
+    assert json.loads(made.calls[-1].request.content) == {"name": "Acme"}
+    assert made.calls[-1].request.headers["authorization"] == "Bearer tok"
+    assert json.loads(capsys.readouterr().out) == {"id": "acme", "name": "Acme", "role": "owner",
+                                                   "admission": "pending", "next_step": None}
+    # until the approval there is no command to run: whoami says the organization waits, and names none
+    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": [], "admission": "pending"}])
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    assert cli.main(["whoami"]) == cli.AUTH
+    got = capsys.readouterr()
+    assert "org:    acme (owner) waits for Metaphi AI to approve it" in got.out
+    assert "waiting for Metaphi AI to approve it" in got.err and "Next:" not in got.err
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    seen = json.loads(capsys.readouterr().out)
+    assert seen["error"]["next_step"] is None and seen["organizations"][0]["admission"] == "pending"
+    # a resource that asks for no approval admits it at once: the sign-in is what is left
+    made.respond(json={"id": "acme", "name": "Acme", "role": "owner", "admission": "admitted",
+                       "message": "Acme is made and you own it. Run `kennet login` again for its keys."})
+    assert cli.main(["org", "create", "Acme"]) == 0
+    assert capsys.readouterr().out.endswith("Next: kennet login\n")
+    made.respond(409, json={"detail": "alice@example.test is in Acme (acme) already; a person is in one organization"})
+    assert cli.main(["org", "create", "Other"]) == cli.FAILED
+    assert "is in Acme (acme) already" in capsys.readouterr().err
+
+
+def test_a_group_command_alone_prints_its_own_help(capsys):
+    for group, verb in (("org", "create"), ("twins", "wait"), ("skill", "install")):
+        assert cli.main([group]) == 0
+        out = capsys.readouterr().out
+        assert out.startswith(f"usage: kennet {group}") and verb in out
+
+
+@respx.mock
 def test_whoami_does_not_call_a_key_fine_that_the_twin_service_refuses(capsys):
     config.save({"token": "tok", "email": "alice@example.test", "org": "acme", "api_key": "mai_sk_live_abcd",
                  "test_api_key": "mai_sk_test_wxyz"})

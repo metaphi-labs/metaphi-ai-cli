@@ -180,10 +180,15 @@ def _key(api_key: str | None, test: bool) -> str:
 
 def no_key(cfg: dict[str, Any], again: bool = True) -> accounts.Error:
     """Signed in, and no key came with the sign-in. Keys are handed over at sign-in alone, so the one command that
-    picks them up once the organization has access is `kennet login`; `again` is False where that was just run."""
+    picks them up once the organization has access is `kennet login`; `again` is False where that was just run.
+    A person in no organization makes theirs first, and one whose organization waits for approval has no command
+    to run: Metaphi AI mails them."""
     why = cfg.get("no_api_key") or "your organization has no key for this machine yet"
+    reason = cfg.get("no_api_key_code")
+    step = {"no_organization": "kennet org create <name>", "awaiting_approval": None}.get(
+        reason, "kennet login" if again else None)
     return accounts.need(f"no key: {why}. Signed in as {cfg.get('email')}; `kennet login` picks the keys up once "
-                         "that changes, or set METAPHI_API_KEY", "no_api_key", "kennet login" if again else None)
+                         "that changes, or set METAPHI_API_KEY", "no_api_key", step)
 
 
 def check(key: str, sleep: Callable[[float], None] = time.sleep) -> errors.MetaphiError | None:

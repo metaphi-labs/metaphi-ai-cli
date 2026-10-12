@@ -82,9 +82,16 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
 - `key.source` is `METAPHI_API_KEY`: the environment holds a key. No sign-in is needed, on this machine or in
   CI; go to step 3. (That key decides live or test by itself: `mai_sk_test_...` is a test key.)
 - `error.code` `not_signed_in` (from this or any command): go to step 2.
-- `error.code` `no_api_key`: the user is signed in, and the sign-in was handed no key; the message says why.
-  Keys are handed over at sign-in only, so run step 2 once: if the organization has been given access since, it
-  saves the keys. If step 2 ends in `no_api_key` again, tell the user the message as it is, and stop.
+- `error.code` `no_api_key`: the user is signed in, and the sign-in was handed no key; the message says why, and
+  `next_step` says what to do:
+  - `kennet org create <name>`: the user is in no organization. Ask them what theirs is called, then make it:
+    `kennet org create "Acme Robotics" --json`. They own it. `"admission": "pending"` means Metaphi AI has to
+    approve it, which takes a person on their side: tell the user they will get an email, and stop. Once they
+    say it came, run step 2. `"admission": "admitted"` means run step 2 now.
+  - `kennet login`: keys are handed over at sign-in only, so run step 2 once: if the organization has been given
+    access since, it saves the keys. If step 2 ends in `no_api_key` again, tell the user the message as it is,
+    and stop.
+  - null: the organization waits for Metaphi AI's approval. Tell the user the message as it is, and stop.
 - Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
 - Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists only those the user
   manages (owner or admin), with `credits_usd`, the prepaid balance, when they may see it; it is empty for a member.
@@ -110,8 +117,9 @@ kennet login --complete --json
 This waits up to 60 seconds for the approval (`--timeout <seconds>` changes that). `error.code`
 `authorization_pending` means not approved yet: run it again, or stop and wait for the user to say they have.
 `"keys": true` means the organization's live and test keys are saved on this machine. `error.code` `no_api_key`
-means the sign-in worked and no key came with it; `error.message` says why (the organization has no access yet,
-or the user is in none). `next_step` is null: tell the user, and stop. Each sign-in replaces the keys the one
+means the sign-in worked and no key came with it; `error.message` says why. `next_step` is
+`kennet org create <name>` when the user is in no organization (step 1 says how), and null otherwise (the
+organization waits for approval, or has no access): tell the user, and stop. Each sign-in replaces the keys the one
 before it saved on any machine.
 
 ## 3. Twin a file
@@ -160,7 +168,7 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 | --- | --- |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
-| `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet login`, do step 2 once: it picks the keys up if access was given since. If `next_step` is null (it came from `login`), tell the user the message and stop. |
+| `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet org create <name>`, the user is in no organization: make theirs (step 1). If it is `kennet login`, do step 2 once: it picks the keys up if access was given since. If it is null, tell the user the message and stop. |
 | `invalid_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
 | `insufficient_scope` | The key does not hold twinning access. Tell the user. |
 | `auth_unavailable`, `unavailable`, `balance_unavailable`, `unreachable` | The service could not answer; nothing was started. Wait `retry_after_s` (30 seconds when absent), run the same command once more, then stop and tell the user with the `request_id`. |
