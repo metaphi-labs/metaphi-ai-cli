@@ -4,8 +4,8 @@ A client of the Kennet API (METAPHI_API, default https://api.metaphi.ai/v1/kenne
 key as a bearer, at the API version it was written for (Metaphi-Version): POST /twins with the file, GET /twins/{id}
 until it ends (backing off, for at most `deadline_s`: METAPHI_TWIN_TIMEOUT or `--timeout`, default two hours), GET
 its content, written whole and synced before it takes the output's name. The upload
-carries an Idempotency-Key drawn once per call, so a retry after a dropped connection or a 5xx never starts a second
-run. Every refusal or failed run raises the typed error the API said (metaphi.errors), its code and request id kept."""
+carries an Idempotency-Key drawn once per call (or the caller's, to make the same call again), so a retry after a
+dropped connection or a 5xx never starts a second run. Every refusal or failed run raises the typed error the API said (metaphi.errors), its code and request id kept."""
 from __future__ import annotations
 
 import os
@@ -132,10 +132,12 @@ def deadline() -> float:
 def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_hex: str = "",
          confidential: list[str] | None = None, say: Callable[[str], None] = print,
          sleep: Callable[[float], None] = time.sleep, deadline_s: float | None = None,
-         clock: Callable[[], float] = time.monotonic, test: bool = False) -> dict[str, Any]:
+         clock: Callable[[], float] = time.monotonic, test: bool = False,
+         idempotency_key: str | None = None) -> dict[str, Any]:
     """Twin one trace file into `out` (default <name>.twin<ext>); answers {"output", "id"}. Waiting past
     `deadline_s` (default `deadline()`) raises a retryable APIError naming the twin, which goes on running.
-    `test` runs on the test key `metaphi login` saved: free, small, apart from live twins."""
+    `test` runs on the test key `metaphi login` saved: free, small, apart from live twins. `idempotency_key` makes
+    a call the same call as an earlier one that was refused. Never prompts: a refusal raises its typed error."""
     key = config.api_key(api_key, test)
     if not key:
         raise accounts.Error("no test key: run `metaphi login`, or set METAPHI_API_KEY to a test key" if test else
@@ -153,7 +155,7 @@ def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_h
     with _client(key) as h:
         body = trace.read_bytes()
         made = _send(h, "POST", "/twins", sleep, files={"file": (trace.name, body)}, data=form,
-                     headers={"idempotency-key": uuid.uuid4().hex}).json()
+                     headers={"idempotency-key": idempotency_key or uuid.uuid4().hex}).json()
         say(f"uploaded {trace.name} ({len(body):,} bytes)")
         twin_id, status, wait = made["id"], made["status"], FIRST_WAIT_S
         say(f"twinning ({twin_id})")

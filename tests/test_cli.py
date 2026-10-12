@@ -186,8 +186,9 @@ def test_a_refusal_raises_its_type_and_keeps_its_code(home, monkeypatch, capsys)
     with respx.mock:
         _api(created=httpx.Response(402, json={"error": OUT_OF_CREDIT}, headers={"request-id": "req_1"}))
         assert _run(home, monkeypatch) == 1
-    err = capsys.readouterr().err
-    assert err.endswith(f"error: {OUT_OF_CREDIT['message']} (code: out_of_credit, request: req_1)\n")
+    err = capsys.readouterr().err   # not a terminal: the error, then where credit is added (an older server: ours)
+    assert err.endswith(f"error: {OUT_OF_CREDIT['message']} (code: out_of_credit, request: req_1)\n"
+                        f"Add credit: {A}/console?add=credit  or run: metaphi credits buy --amount <amount>\n")
     with respx.mock:
         _api(created=httpx.Response(402, json={"error": OUT_OF_CREDIT}))
         with pytest.raises(errors.BillingError) as e:
@@ -310,6 +311,105 @@ def test_only_owners_and_billing_buy_and_only_through_stripe(monkeypatch, capsys
     assert "not Stripe's" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["credits", "buy", "--amount", "0"])
+
+
+ADD = "https://app.metaphi.ai/console?org=acme&add=credit"
+REFUSED = httpx.Response(402, json={"error": {**OUT_OF_CREDIT, "action_url": ADD}})
+
+
+def _out_of_credit(monkeypatch, answers, org=None, then=None):
+    """A refused twin at a terminal: the organization accounts shows, what the person types, and Checkout paying."""
+    config.save({"token": "tok"})
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(accounts.time, "sleep", lambda s: None)
+    monkeypatch.setattr(accounts.webbrowser, "open", lambda url: True)
+    asked = []
+    said = iter(answers)
+
+    def ask(prompt):
+        asked.append(prompt)
+        got = next(said)
+        if isinstance(got, BaseException):
+            raise got
+        return got
+    monkeypatch.setattr("builtins.input", ask)
+    respx.get(f"{A}/credits/orgs").respond(json=[{**ORG, "credits_usd": 0.0, **(org or {})}])
+    checkout = respx.post(f"{A}/credits/orgs/acme/checkout").respond(
+        json={"url": "https://checkout.stripe.com/c/pay/cs_1", "id": "cs_1"})
+    respx.get(f"{A}/credits/orgs/acme/checkout/cs_1").respond(json={"paid": True, "credits_usd": 100.0})
+    made, _, _ = _api()
+    made.mock(side_effect=[REFUSED, then or httpx.Response(202, json=TWIN)])
+    return made, checkout, asked
+
+
+@respx.mock
+def test_out_of_credit_at_a_terminal_pays_and_carries_on(home, monkeypatch, capsys):
+    made, checkout, asked = _out_of_credit(monkeypatch, [""])
+    assert _run(home, monkeypatch) == 0
+    assert asked == ["Add credit now? Amount in $ [100]: "]
+    assert json.loads(checkout.calls[0].request.content) == {"usd": 100.0}
+    assert made.call_count == 2 and len({c.request.headers["idempotency-key"] for c in made.calls}) == 1
+    out = capsys.readouterr()
+    assert out.out.splitlines()[:5] == ["acme is out of prepaid credit.", "Pay in the browser:",
+                                        "  https://checkout.stripe.com/c/pay/cs_1",
+                                        "Paid. acme: $100.00 prepaid credit", "uploaded trace.json (17 bytes)"]
+    assert "error" not in out.err and (home / "trace.twin.json").read_text() == '{"user": "Morgan"}'
+
+
+@pytest.mark.parametrize("answers", [["n"], [KeyboardInterrupt()], [EOFError()], ["0", "lots", "no"]])
+def test_declining_the_top_up_is_the_refusal_and_no_retry(home, monkeypatch, capsys, answers):
+    with respx.mock:
+        made, checkout, asked = _out_of_credit(monkeypatch, answers)
+        assert _run(home, monkeypatch) == 1
+        assert made.call_count == 1 and not checkout.called and len(asked) == len(answers)
+    assert capsys.readouterr().err.endswith(
+        f"(code: out_of_credit, request: req_1)\nAdd credit: {ADD}  or run: metaphi credits buy --amount <amount>\n")
+
+
+@respx.mock
+def test_someone_who_may_not_buy_is_told_who_can_and_is_not_asked(home, monkeypatch, capsys):
+    made, checkout, asked = _out_of_credit(monkeypatch, [], org={"role": "admin", "can_buy": False})
+    assert _run(home, monkeypatch) == 1
+    assert made.call_count == 1 and not checkout.called and not asked
+    assert capsys.readouterr().err.endswith(f"An owner or billing member of acme has to add credit: {ADD}\n")
+
+
+@pytest.mark.parametrize("argv", [[], ["--json"]])
+def test_out_of_credit_away_from_a_terminal_never_asks(home, monkeypatch, capsys, argv):
+    with respx.mock:
+        made, checkout, asked = _out_of_credit(monkeypatch, [])
+        if not argv:
+            monkeypatch.setattr(cli, "_interactive", lambda: False)   # a pipe, CI
+        assert _run(home, monkeypatch, *argv) == 1
+        assert made.call_count == 1 and not checkout.called and not asked
+    out = capsys.readouterr()
+    assert out.err.endswith(f"Add credit: {ADD}  or run: metaphi credits buy --amount <amount>\n")
+    if argv:
+        assert json.loads(out.out)["error"]["action_url"] == ADD
+
+
+@respx.mock
+def test_a_retry_refused_again_stops(home, monkeypatch, capsys):
+    made, checkout, asked = _out_of_credit(monkeypatch, ["25"], then=REFUSED)
+    assert _run(home, monkeypatch) == 1
+    assert made.call_count == 2 and checkout.call_count == 1 and len(asked) == 1
+    assert json.loads(checkout.calls[0].request.content) == {"usd": 25.0}
+    assert "code: out_of_credit" in capsys.readouterr().err
+
+
+def test_the_library_raises_with_the_action_url_and_never_asks(home, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("the library asked"))
+    (home / "trace.json").write_text("{}")
+    monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_live")
+    with respx.mock:
+        made, _, _ = _api(created=REFUSED)
+        with pytest.raises(errors.BillingError) as e:
+            twin.twin(home / "trace.json", say=lambda s: None, sleep=lambda s: None, idempotency_key="k1")
+        assert made.calls[0].request.headers["idempotency-key"] == "k1"
+    assert e.value.action_url == ADD and e.value.to_dict()["action_url"] == ADD
+    assert errors.from_object(OUT_OF_CREDIT).action_url is None
+    assert cli._credit_url(errors.from_object({**OUT_OF_CREDIT, "action_url": "https://evil.test/pay"})) == (
+        f"{A}/console?add=credit")
 
 
 @respx.mock

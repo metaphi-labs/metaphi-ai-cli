@@ -9,6 +9,7 @@ import argparse
 import getpass
 import json
 import sys
+import uuid
 from pathlib import Path
 
 from metaphi import __version__, accounts, config, errors
@@ -87,8 +88,17 @@ def _seconds(said: str) -> float:
 def cmd_twin(a: argparse.Namespace) -> None:
     from metaphi.twin import twin
     say = (lambda s: print(s, file=sys.stderr)) if a.json else print
-    got = twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
-               a.confidential, say=say, deadline_s=a.timeout, test=a.test)
+    key = uuid.uuid4().hex  # one Idempotency-Key for both attempts: the retry after a top-up cannot start a second run
+
+    def run() -> dict:
+        return twin(Path(a.file), Path(a.output) if a.output else None, a.api_key, a.key or "",
+                    a.confidential, say=say, deadline_s=a.timeout, test=a.test, idempotency_key=key)
+    try:
+        got = run()
+    except errors.BillingError as e:
+        if e.code != "out_of_credit" or a.json or not _interactive() or not _refill(e):
+            raise
+        got = run()  # once: a second refusal is the error
     if a.json:
         print(json.dumps({"output": got["output"]}, indent=2))
 
@@ -103,6 +113,58 @@ def _usd(value: str) -> float:
     return usd
 
 
+def _interactive() -> bool:
+    """A person is at both ends: only then may a command ask a question."""
+    return all(s is not None and s.isatty() for s in (sys.stdin, sys.stdout))
+
+
+def _credit_url(e: errors.MetaphiError) -> str:
+    """Where credit is added: the address the server sent, else the console's on the configured accounts host."""
+    try:
+        return config.check_url(e.action_url, "the add-credit page")
+    except config.Error:
+        return f"{config.accounts_url()}/console?add=credit"
+
+
+def _buy(o: dict, usd: float, open_browser: bool = True) -> None:
+    got = accounts.buy(o["id"], usd, open_browser=open_browser)
+    print(f"Paid. {o['id']}: ${got['credits_usd']:,.2f} prepaid credit")
+
+
+def _top_up(o: dict) -> bool:
+    """Ask for an amount and take it through Checkout; False when the person declines (n, Ctrl-C, end of input)."""
+    while True:
+        try:
+            said = input("Add credit now? Amount in $ [100]: ").strip().lstrip("$").lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if said in ("n", "no"):
+            return False
+        try:
+            usd = _usd("100" if said in ("", "y", "yes") else said)
+        except argparse.ArgumentTypeError as e:
+            print(e)
+            continue
+        _buy(o, usd)
+        return True
+
+
+def _refill(e: errors.MetaphiError) -> bool:
+    """Out of credit at a terminal: offer the top-up to someone who may buy it. True once it is paid."""
+    try:
+        o = accounts.credit_of(None)
+    except Exception:  # noqa: BLE001 - not signed in, several organizations, accounts down: the refusal stands
+        return False
+    if o["credits_usd"] > 0:  # not the organization this key draws on
+        return False
+    if not o.get("can_buy"):
+        e.advice = f"An owner or billing member of {o['id']} has to add credit: {_credit_url(e)}"
+        return False
+    print(f"{o['id']} is out of prepaid credit.")
+    return _top_up(o)
+
+
 def cmd_credits(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     print(f"{o['id']}: ${o['credits_usd']:,.2f} prepaid credit")
@@ -115,8 +177,7 @@ def cmd_credits_buy(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     if not o.get("can_buy"):
         raise accounts.Error(f"only an owner or billing member of {o['id']} can buy its credit")
-    got = accounts.buy(o["id"], a.amount, open_browser=not a.no_browser)
-    print(f"Paid. {o['id']}: ${got['credits_usd']:,.2f} prepaid credit")
+    _buy(o, a.amount, open_browser=not a.no_browser)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -176,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(a, "json", False):
             print(json.dumps({"error": error.to_dict()}, indent=2))
         print(f"error: {error}", file=sys.stderr)
+        if error.code == "out_of_credit":
+            print(getattr(error, "advice", None) or f"Add credit: {_credit_url(error)}  or run: "
+                  "metaphi credits buy --amount <amount>", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

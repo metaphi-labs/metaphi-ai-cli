@@ -83,7 +83,7 @@ error: This organization's prepaid balance is used up; add credits to continue. 
 ```
 
 With `--json`, stdout also gets the error object: `{"error": {"type", "code", "message", "retryable", "request_id"}}`,
-plus `run_id` when a run failed. Quote the `request_id` to support.
+plus `run_id` when a run failed and `action_url` when a page fixes it. Quote the `request_id` to support.
 
 From Python, each error `type` raises its own class from `metaphi.errors`. All of them subclass `MetaphiError`:
 
@@ -131,6 +131,33 @@ metaphi credits buy --amount 200      # pay through Stripe Checkout in the brows
 ```
 
 Only owners and billing members can buy; a billing member sees the balance and buys credit, nothing else.
+
+### Running out of credit
+
+When `metaphi twin` is refused with `out_of_credit` at a terminal, and you may buy for your organization, it offers to
+add credit there and then, opens Stripe Checkout, and carries on with the same run once the payment lands:
+
+```
+$ metaphi twin trace.json
+acme is out of prepaid credit.
+Add credit now? Amount in $ [100]:
+Pay in the browser:
+  https://checkout.stripe.com/c/pay/...
+Paid. acme: $100.00 prepaid credit
+uploaded trace.json (48,112 bytes)
+```
+
+Enter takes $100; `n` or Ctrl-C declines. The run is retried once, under the Idempotency-Key of the first attempt, so
+it can never start twice. If you may not buy, it names who can and where.
+
+In CI, a pipe or with `--json` nothing is asked. The command exits 1 with the error and one more line on stderr:
+
+```
+Add credit: https://app.metaphi.ai/console?add=credit  or run: metaphi credits buy --amount <amount>
+```
+
+The library never prompts: `twin()` raises `BillingError`, whose `action_url` is the add-credit page when the service
+sent one.
 
 ## Configuration
 
