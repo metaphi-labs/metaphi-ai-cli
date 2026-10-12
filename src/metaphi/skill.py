@@ -228,6 +228,11 @@ pull each image the lock names. Each answer's `next_step` is the command that fo
   Metaphi AI a service account of its own pulls as that account too, with no token from here.
 - Run the tasks with Harbor on your own machines; nothing of Metaphi AI is called at run time. Keep the bundle
   as it is: `tests/` and `solution/` must never be put where the agent being trained can read them.
+- Before the first sampling run on a new delivery, check it on those machines with Harbor's two built-in
+  agents, which call no model: `oracle` applies each task's `solution/` and must score 1 on every task; `nop`
+  changes nothing and must score 0. A task that disagrees does not run here as it was delivered (an image that
+  did not pull, a sandbox too small, another Harbor version): leave it out of the run and tell the user the
+  task, the delivery id, the task's `tree` and the verifier's output, so it can be reported.
 - With every result you keep, record the delivery id and the task's `tree`. Scores compare only within one
   version, and `diff` says, per task, whether its grading changed (`grading_changed`): if it did, scores on
   that task from the older version do not carry over.
