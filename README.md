@@ -176,7 +176,7 @@ but for the last:
 | --- | --- | --- |
 | `not_signed_in` | no sign-in on this machine, or the server has ended it | `kennet login` |
 | `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
-| `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet login` (`null` from `login` itself) |
+| `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org create <name>` when you are in no organization; `null` while yours waits for approval, and from `login` itself; else `kennet login` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
@@ -189,6 +189,10 @@ Any other error the CLI says itself, such as a file that is not there, is a plai
 what each may do, the prepaid balance when you may see it, and which key calls run on (the saved one, or
 `METAPHI_API_KEY`), by its last four characters. It asks the twin service whether each key works, and exits 0 only
 when the one in use does.
+If you are in no organization, make yours: `kennet org create "Acme Robotics"`. You own it. During the private beta
+Metaphi AI approves each new organization; you are mailed when yours is, and `kennet login` then saves its keys.
+`kennet whoami` says so while it waits.
+
 A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
 the console at <https://app.metaphi.ai/console>.
 
