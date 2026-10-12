@@ -92,17 +92,24 @@ def pending() -> dict[str, Any] | None:
     return held
 
 
-def finish(sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = None,
+           at_once: bool = False) -> dict[str, Any]:
     """Wait for the approval of the sign-in under way, then keep the token and the organization's keys that come
-    with it (`api_key`, `test_api_key`; `no_api_key` says why none came)."""
+    with it (`api_key`, `test_api_key`; `no_api_key` says why none came). `wait_s` bounds the wait: past it the
+    sign-in stays under way and the refusal (`authorization_pending`, retryable) says to call again. `at_once`
+    asks first and waits after: for a call that comes back to a code shown a while ago."""
     held = pending()
     if held is None:
         raise need("no sign-in is under way, or its code expired; run `metaphi login`", "login_expired",
                    "metaphi login")
     device_code, interval = config.load()["device_code"], float(held["interval"])
+    until = held["expires"] if wait_s is None else min(held["expires"], time.time() + wait_s)
+    first = at_once
     with _http() as h:
-        while time.time() < held["expires"]:
-            sleep(interval)
+        while first or time.time() + interval < until:
+            if not first:
+                sleep(interval)
+            first = False
             r = h.post("/oauth/token", data={"grant_type": DEVICE_GRANT, "device_code": device_code,
                                               "client_id": CLIENT_ID})
             body = _json(r)
@@ -129,6 +136,11 @@ def finish(sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
             raise need({"expired_token": "the code expired; run `metaphi login` again",
                         "access_denied": "the sign-in was declined"}.get(error, _said(r)),
                        "login_expired" if error == "expired_token" else "login_refused", "metaphi login")
+    if time.time() + interval < held["expires"]:
+        e = need(f"not approved yet: the code {held['user_code']} waits at {held['open']}", "authorization_pending",
+                 "metaphi login --complete")
+        e.retryable = True
+        raise e
     _forget()
     raise need("the code expired; run `metaphi login` again", "login_expired", "metaphi login")
 

@@ -21,6 +21,9 @@ metaphi login                  # opens the browser; confirm the code you see in 
 metaphi twin trace.json        # writes trace.twin.json
 ```
 
+Working through Claude Code? `metaphi skill install`, then ask it to twin the file: see
+[Driving it from an agent](#driving-it-from-an-agent).
+
 `metaphi login` signs you in as yourself and hands this machine your organization's keys: a live key (`mai_sk_...`)
 and a test key (`mai_sk_test_...`). They are kept in the OS keychain when there is one (macOS Keychain, Windows
 Credential Locker, Secret Service on Linux), otherwise in the config file, and are never printed. Logging in again
@@ -34,6 +37,15 @@ Usage, keys, members and billing are in the console at <https://app.metaphi.ai/c
 
 ## Driving it from an agent
 
+```sh
+metaphi skill install          # once per machine: Claude Code now knows this CLI
+```
+
+That writes the `kennet` skill to `~/.claude/skills/kennet` (`--project` writes it to `./.claude/skills` instead, to commit
+for a team). Then ask Claude for what you want: "twin `trace.jsonl` before I send it to the vendor". The skill is a
+pointer: it tells the agent to run `metaphi skill show`, which prints the guide for the version installed, so the
+guide never goes stale. Any other agent can be handed the output of `metaphi skill show`.
+
 The CLI is made to be run by a coding agent (Claude Code and the like) as much as typed. Away from a terminal
 nothing waits on a question, and every command takes `--json`: stdout is then the result, or the error object,
 alone, and progress goes to stderr. An error that one command clears names it: `Next: <command>` on stderr,
@@ -42,7 +54,7 @@ alone, and progress goes to stderr. An error that one command clears names it: `
 ```sh
 metaphi login --json           # {"verification_uri", "user_code", "expires_in", "next_step": "metaphi login --complete"}
                                # the person opens the page and confirms the code
-metaphi login --complete       # waits for the approval and saves the keys; safe to run again
+metaphi login --complete       # waits for the approval (60 s away from a terminal) and saves the keys; safe to run again
 metaphi whoami --json          # asks the server: email, organizations (role, grants, balance), the key in use
 metaphi twin trace.json --no-wait --json    # {"id", "status", "next_step": "metaphi twins wait twin_..."}
 metaphi twins wait twin_... --json          # {"output", "id"} once it ends
@@ -148,7 +160,7 @@ but for the last:
 | Code | When | `next_step` |
 | --- | --- | --- |
 | `not_signed_in` | no sign-in on this machine, or the server has ended it | `metaphi login` |
-| `no_api_key` | not signed in and no `METAPHI_API_KEY` | `metaphi login` |
+| `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `metaphi login --complete` |
 | `no_api_key` | signed in, but the organization was handed no key; the message says why | `metaphi whoami` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `metaphi login` |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `metaphi twins wait <id>` |

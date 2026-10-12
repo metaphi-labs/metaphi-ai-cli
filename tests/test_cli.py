@@ -5,7 +5,7 @@ import httpx
 import pytest
 import respx
 
-from metaphi import accounts, cli, config, errors, twin
+from metaphi import accounts, cli, config, errors, skill, twin
 
 A = config.DEFAULT_ACCOUNTS
 
@@ -16,6 +16,8 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("METAPHI_NO_KEYRING", "1")
     for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_API", "METAPHI_ALLOW_CUSTOM_HOST"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
@@ -86,7 +88,15 @@ def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch,
     got = json.loads(out.out)
     assert (got["verification_uri"], got["user_code"]) == (f"{A}/device", "ABCD-EFGH")
     assert got["next_step"] == "metaphi login --complete" and 0 < got["expires_in"] <= 60
+    assert got["status"] == "pending"
     assert code.call_count == 1 and not token.called and "token" not in config.load()
+    assert cli.main(["login", "--no-browser", "--json"]) == 0   # asked again: the code a person may hold stands
+    assert json.loads(capsys.readouterr().out)["user_code"] == "ABCD-EFGH" and code.call_count == 1
+    assert cli.main(["login", "--complete", "--json", "--timeout", "1"]) == 1   # not approved yet, and said so
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["code"], error["retryable"], error["next_step"]) == ("authorization_pending", True,
+                                                                         "metaphi login --complete")
+    assert token.call_count == 1 and config.load()["device_code"] == "dc"   # still under way
     assert cli.main(["login", "--complete", "--json"]) == 0
     out = capsys.readouterr()
     assert json.loads(out.out) == {"email": "alice@example.test", "org": "acme", "keys": True,
@@ -569,3 +579,36 @@ def test_stopping_the_wait_says_the_twin_goes_on_and_how_to_come_back(home, monk
 def test_help_is_a_command_and_shows_the_examples(capsys):
     assert cli.main(["help"]) == 0
     assert "metaphi twins wait" in capsys.readouterr().out
+
+
+def test_skill_install_writes_a_stub_that_sends_the_agent_to_the_binarys_own_guide(home, capsys):
+    assert cli.main(["skill", "install", "--json"]) == 0
+    path = home / "claude" / "skills" / "kennet" / "SKILL.md"
+    assert json.loads(capsys.readouterr().out) == {"path": str(path), "next_step": "metaphi skill show"}
+    text = path.read_text()
+    assert text.startswith("---\nname: kennet\ndescription: ") and "metaphi skill show" in text
+    assert cli.main(["skill", "install"]) == 0   # again: ours, so replaced
+    assert cli.main(["skill", "install", "--project"]) == 0
+    assert (home / ".claude" / "skills" / "kennet" / "SKILL.md").read_text() == text
+    capsys.readouterr()
+    assert cli.main(["skill", "remove"]) == 0 and not path.parent.exists()
+    path.parent.mkdir(parents=True)
+    path.write_text("mine")   # someone else's file is never overwritten or removed without being told to
+    assert cli.main(["skill", "install"]) == 1 and path.read_text() == "mine"
+    assert cli.main(["skill", "remove"]) == 0 and path.read_text() == "mine"
+    assert cli.main(["skill", "install", "--force"]) == 0 and path.read_text() == text
+
+
+def test_the_guide_names_only_commands_and_flags_the_parser_takes(capsys):
+    """The guide is the contract an agent follows: every `metaphi ...` line in it has to parse."""
+    assert cli.main(["skill", "show"]) == 0
+    guide = capsys.readouterr().out
+    assert guide == skill.GUIDE and f"metaphi {cli.__version__}" in guide.splitlines()[0]
+    lines = [x.split("#")[0].strip() for x in guide.splitlines() if x.startswith("metaphi ")]
+    assert len(lines) >= 10
+    for line in lines:
+        argv = [{"twin_...": "twin_t1", "<dollars>": "5"}.get(w, w) for w in line.split()[1:]]
+        cli.parser().parse_args(argv)   # exits on a command or flag that is not there
+    for code in ("not_signed_in", "no_api_key", "login_expired", "login_refused", "authorization_pending",
+                 "timed_out", "out_of_credit"):
+        assert f"`{code}`" in guide   # each code the CLI or the service says has its row

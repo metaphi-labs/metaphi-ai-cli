@@ -19,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 
-from metaphi import __version__, accounts, config, errors
+from metaphi import __version__, accounts, config, errors, skill
 
 
 class _OnArgv(argparse.Action):
@@ -65,6 +65,7 @@ def _signed_in(a: argparse.Namespace, got: dict) -> None:
              f"Signed in as {got.get('email')}.",
              f"Ready for {got.get('org')}: its live key and test key are saved on this machine.",
              "Next: metaphi twin <file>   (--test for a free test run)",
+             "" if skill.installed() else "Working through Claude Code? `metaphi skill install` teaches it this CLI.",
              f"Usage, keys, members and billing: {console}")
         return
     why = got.get("no_api_key") or "the server sent none"
@@ -90,15 +91,16 @@ def cmd_login(a: argparse.Namespace) -> None:
         held = accounts.pending()
         if held is not None:
             say(f"Waiting for the approval of code {held['user_code']} at {held['verification_uri']}")
-        _signed_in(a, accounts.finish())
+        # away from a terminal the caller is a tool call with a clock of its own: answer within it, to be called again
+        _signed_in(a, accounts.finish(wait_s=a.timeout or (None if _interactive() else 60.0), at_once=True))
         return
     if a.no_wait or not (a.wait or _interactive()):
         # away from a terminal nobody reads a prompt that then blocks: hand the page and the code over, and stop
-        held = accounts.start()
+        held = accounts.pending() or accounts.start()   # asked twice, the code a person may hold stays the code
         if not a.no_browser:
             accounts.webbrowser.open(held["open"])
         _out(a, {"verification_uri": held["verification_uri"], "verification_uri_complete": held["open"],
-                 "user_code": held["user_code"], "expires_in": int(held["expires"] - time.time()),
+                 "user_code": held["user_code"], "expires_in": int(held["expires"] - time.time()), "status": "pending",
                  "next_step": "metaphi login --complete"},
              f"Open {held['verification_uri']} and enter the code {held['user_code']}",
              f"(or open {held['open']})" if held["open"] != held["verification_uri"] else "",
@@ -286,6 +288,17 @@ def cmd_credits_buy(a: argparse.Namespace) -> None:
     _buy(o, a.amount, open_browser=not a.no_browser)
 
 
+def cmd_skill_install(a: argparse.Namespace) -> None:
+    path = skill.install(a.project, a.force)
+    _out(a, {"path": str(path), "next_step": "metaphi skill show"},
+         f"wrote {path}", "Claude Code now reaches for `metaphi` when a trace needs twinning; start a new session.")
+
+
+def cmd_skill_remove(a: argparse.Namespace) -> None:
+    path = skill.remove(a.project)
+    _out(a, {"removed": str(path) if path else None}, f"removed {path}" if path else "no kennet skill there")
+
+
 EXAMPLES = """\
 examples:
   metaphi login                      sign in; your organization's keys are saved on this machine
@@ -296,6 +309,8 @@ examples:
   metaphi twins wait twin_...        come back for a twin: wait until it ends, write its file
 
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
+  metaphi skill install              teach Claude Code this CLI (once per machine)
+  metaphi skill show                 the guide an agent follows, for this version
   metaphi login --json               prints the page and the code, and returns
   metaphi login --complete           waits for the approval, saves the keys
 """
@@ -325,6 +340,8 @@ def parser() -> argparse.ArgumentParser:
                      "save the keys")
     how.add_argument("--wait", action="store_true", help="wait for the approval in this call, even away from a "
                      "terminal")
+    s.add_argument("--timeout", type=_seconds, help="with --complete: seconds to wait for the approval (default: "
+                   "until the code expires at a terminal, 60 away from one); past it, run --complete again")
     _json_flag(s)
     s.set_defaults(fn=cmd_login)
     sub.add_parser("logout", help="sign out everywhere this sign-in is used, and revoke its keys").set_defaults(
@@ -377,6 +394,22 @@ def parser() -> argparse.ArgumentParser:
     for verb in (v, g, w):
         verb.add_argument("--test", action="store_true", help="test twins: read with the saved test key")
         _json_flag(verb)
+
+    s = sub.add_parser("skill", help="the Kennet skill: teach a coding agent (Claude Code) this CLI")
+    s.set_defaults(fn=lambda a: s.print_help())
+    verbs = s.add_subparsers(dest="verb", metavar="<verb>")
+    v = verbs.add_parser("install", help="write the skill where Claude Code reads it (~/.claude/skills/kennet)")
+    v.add_argument("--project", action="store_true", help="into this directory's .claude/skills instead, to commit "
+                   "for a team")
+    v.add_argument("--force", action="store_true", help="replace a skill file there that metaphi did not write")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_skill_install)
+    verbs.add_parser("show", help="print the guide an agent follows, for this version").set_defaults(
+        fn=lambda a: print(skill.GUIDE, end=""))
+    v = verbs.add_parser("remove", help="take the skill away")
+    v.add_argument("--project", action="store_true")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_skill_remove)
 
     sub.add_parser("help", help="this help").set_defaults(fn=lambda a: p.print_help())
     return p

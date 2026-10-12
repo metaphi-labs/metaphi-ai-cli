@@ -137,7 +137,8 @@ def _key(api_key: str | None, test: bool) -> str:
         cfg = config.load()
         if not cfg.get("token"):
             raise accounts.need("no test key: run `metaphi login`, or set METAPHI_API_KEY to a test key" if test else
-                                "no key: run `metaphi login`, or set METAPHI_API_KEY", "no_api_key", "metaphi login")
+                                "no key: run `metaphi login`, or set METAPHI_API_KEY", "not_signed_in",
+                                "metaphi login")
         # signed in, and the sign-in was handed no key: signing in again changes nothing until the reason does
         why = cfg.get("no_api_key") or "your organization has no key for this machine yet"
         raise accounts.need(f"no key: {why}. Signed in as {cfg.get('email')}; sign in again once that changes, or "
