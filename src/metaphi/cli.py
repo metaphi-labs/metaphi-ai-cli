@@ -251,6 +251,96 @@ def cmd_twins_wait(a: argparse.Namespace) -> None:
         print(json.dumps(got, indent=2))
 
 
+def _size(n: object) -> str:
+    n = float(n) if isinstance(n, (int, float)) else 0.0
+    return f"{n / 1e6:.1f} MB" if n >= 1e5 else f"{n / 1e3:.1f} kB"
+
+
+def _delivery_line(d: dict) -> str:
+    return (f"{d['id']}  {d.get('delivered') or '-'}  {d['task_count']} tasks  {d['image_count']} images  "
+            f"{_size(d.get('bytes'))}" + (f"  (newer: {d['newer']})" if d.get("newer") else ""))
+
+
+def cmd_delivery_list(a: argparse.Namespace) -> None:
+    from metaphi import delivery
+    got = delivery.held()
+    _out(a, {"data": got}, *([_delivery_line(d) for d in got] or ["your organization holds no deliveries yet"]),
+         *([f"Next: kennet delivery show {got[0]['id']}"] if got else []))
+
+
+def _most(tasks: list, field: str) -> object:
+    held = [t[field] for t in tasks if isinstance(t.get(field), (int, float))]
+    return f"{max(held):g}" if held else "?"
+
+
+def _tally(tasks: list, field: str) -> str:
+    seen: dict[str, int] = {}
+    for t in tasks:
+        if t.get(field):
+            seen[t[field]] = seen.get(t[field], 0) + 1
+    return ", ".join(f"{k} {n}" for k, n in sorted(seen.items(), key=lambda kv: -kv[1]))
+
+
+def cmd_delivery_show(a: argparse.Namespace) -> None:
+    from metaphi import delivery
+    d = delivery.show(a.id)
+    tasks = d["tasks"]
+    kinds = "; ".join(x for x in (_tally(tasks, "category"), _tally(tasks, "difficulty")) if x)
+    lines = [f"{d['id']}  delivered {d.get('delivered') or '-'}",
+             f"  tasks     {d['task_count']}" + (f"  ({kinds})" if kinds else ""),
+             f"  images    {d['image_count']}, each pinned by digest, in {d.get('registry') or '-'}",
+             f"  download  {_size(d.get('bytes'))}",
+             (f"  a run     up to {_most(tasks, 'cpus')} CPUs, {_most(tasks, 'memory_mb')} MB memory, "
+              f"{_most(tasks, 'storage_mb')} MB disk; the agent up to {_most(tasks, 'agent_timeout_s')} s, "
+              f"grading up to {_most(tasks, 'verifier_timeout_s')} s"),
+             *([f"  newer     {d['newer']}  (kennet delivery diff {d['id']} {d['newer']})"] if d.get("newer") else [])]
+    if a.tasks:
+        lines += [f"  {t['name']}  {t['tree'][7:19]}  {len(t['images'])} images  {t.get('cpus', '?')} CPUs  "
+                  f"{t.get('memory_mb', '?')} MB  {t.get('agent_timeout_s', '?')} s" for t in tasks]
+    _out(a, d, *lines, f"Next: kennet delivery pull {d['id']}")
+
+
+def cmd_delivery_pull(a: argparse.Namespace) -> None:
+    from metaphi import delivery
+    got = delivery.pull(a.id, Path(a.to) if a.to else None, dry_run=a.dry_run, say=_progress(a))
+    got["next_step"] = (f"kennet delivery pull {a.id} --to {got['dir']}" if a.dry_run
+                        else f"kennet delivery verify {got['dir']}")
+    n = len(got["fetched"])
+    said = (f"{a.id} would fetch {n} of {got['tasks']} tasks into {got['dir']}; {got['unchanged']} are there already"
+            if a.dry_run else
+            f"{a.id} is at {got['dir']}: {got['tasks']} tasks ({n} fetched, {got['unchanged']} already there), "
+            f"{_size(got['bytes'])} downloaded")
+    _out(a, got, said, *([] if a.dry_run else [f"Lock: {got['lock']}"]), f"Next: {got['next_step']}")
+
+
+def cmd_delivery_verify(a: argparse.Namespace) -> int:
+    from metaphi import delivery
+    got = delivery.verify(Path(a.dir))
+    lines = []
+    for t in got["differ"]:
+        files = ", ".join(f"{f['path']} ({f['state']})" for f in t["files"])
+        lines.append(f"{t['state']:<8} {t['name']}" + (f": {files}" if files else ""))
+    lines += [f"added    {name}  (not in the delivery)" for name in got["added"]]
+    lines.append(f"{got['id']}: {got['as_delivered']} of {got['tasks']} tasks as delivered")
+    _out(a, got, *lines, *([f"Next: {got['next_step']}"] if got["next_step"] else []))
+    return 0 if got["ok"] else FAILED
+
+
+def cmd_delivery_diff(a: argparse.Namespace) -> None:
+    from metaphi import delivery
+    got = delivery.diff(a.a, a.b)
+    lines = [f"added    {n}" for n in got["added"]] + [f"removed  {n}" for n in got["removed"]]
+    for t in got["changed"]:
+        what = "grading changed: earlier scores on it do not carry over" if t["grading_changed"] else \
+            "grading unchanged"
+        lines.append(f"changed  {t['name']}  ({what}; {len(t['files'])} files"
+                     + (", images" if t["images_changed"] else "") + ")")
+    lines.append(f"{got['from']} -> {got['to']}: {len(got['added'])} added, {len(got['removed'])} removed, "
+                 f"{len(got['changed'])} changed ({len(got['grading_changed'])} in their grading), "
+                 f"{got['unchanged']} unchanged")
+    _out(a, got, *lines, f"Next: kennet delivery pull {got['to']}")
+
+
 def _usd(value: str) -> float:
     try:
         usd = round(float(value), 2)
@@ -360,6 +450,9 @@ examples:
   kennet twin trace.json --out twins/   write the twin into a directory
   kennet twins list                 your organization's twins, newest first
   kennet twins wait twin_...        come back for a twin: wait until it ends, write its file
+  kennet delivery list              the task sets your organization holds
+  kennet pull eswe-mini@0.1.0       fetch one into ./eswe-mini-0.1.0; again, only what differs
+  kennet verify ./eswe-mini-0.1.0   check it against its lock, offline
 
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
   kennet skill install              teach Claude Code this CLI (once per machine)
@@ -469,6 +562,41 @@ def parser() -> argparse.ArgumentParser:
         verb.add_argument("--test", action="store_true", help="test twins: read with the saved test key")
         _json_flag(verb)
 
+    s = sub.add_parser("delivery", help="the task sets your organization holds: list, show, pull, verify, diff")
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
+    verbs = s.add_subparsers(dest="delivery_command", metavar="<command>")
+    v = verbs.add_parser("list", help="the deliveries your organization holds, newest first")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_delivery_list)
+    v = verbs.add_parser("show", help="one delivery: its tasks, images and what a run of it asks")
+    v.add_argument("id", metavar="<name@version>")
+    v.add_argument("--tasks", action="store_true", help="a line for every task")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_delivery_show)
+
+    def _pull(v: argparse.ArgumentParser) -> None:
+        v.add_argument("id", metavar="<name@version>")
+        v.add_argument("--to", metavar="DIR", help="where it goes (default: ./<name>-<version>)")
+        v.add_argument("--dry-run", action="store_true", help="say what would be fetched, and fetch nothing")
+        _json_flag(v)
+        v.set_defaults(fn=cmd_delivery_pull)
+
+    def _verify(v: argparse.ArgumentParser) -> None:
+        v.add_argument("dir", metavar="<dir>", help="a pulled delivery")
+        _json_flag(v)
+        v.set_defaults(fn=cmd_delivery_verify)
+
+    _pull(verbs.add_parser("pull", help="fetch a delivery into a directory; again, it fetches only what differs"))
+    _verify(verbs.add_parser("verify", help="check a pulled delivery against its lock: offline, exit 1 if it "
+                                            "differs"))
+    v = verbs.add_parser("diff", help="what changed between two versions, and whether a task's grading did")
+    v.add_argument("a", metavar="<name@version>")
+    v.add_argument("b", metavar="<name@version>")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_delivery_diff)
+    _pull(sub.add_parser("pull", help="the same as `delivery pull`"))
+    _verify(sub.add_parser("verify", help="the same as `delivery verify`"))
+
     s = sub.add_parser("skill", help="the Kennet skill: teach a coding agent (Claude Code) this CLI")
     s.set_defaults(fn=lambda a, s=s: s.print_help())
     verbs = s.add_subparsers(dest="verb", metavar="<verb>")
@@ -500,7 +628,9 @@ def main(argv: list[str] | None = None) -> int:
             p.print_help()
             print("\nNext: kennet twin <file>" if config.api_key() else "\nGet started: kennet login")
             return 0
-        a.fn(a)
+        ended = a.fn(a)
+        if isinstance(ended, int) and ended:   # the command ran and its answer is no: `verify` on a changed tree
+            return ended
     except config.Error as e:
         # `error: <message> (code: <code>, request: <request id>)`; --json also puts the error object on stdout
         error = e if isinstance(e, errors.MetaphiError) else errors.MetaphiError(str(e))
