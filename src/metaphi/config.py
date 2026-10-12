@@ -6,14 +6,14 @@
     METAPHI_API                the twin API (default https://api.metaphi.ai/v1/kennet)
     METAPHI_ALLOW_CUSTOM_HOST  1 lets the two above, and the file links they hand out, leave metaphi.ai
     METAPHI_TWIN_TIMEOUT       seconds `kennet twin` waits for a twin to end (default 7200)
-    METAPHI_NO_KEYRING         1 keeps secrets in the config file even when an OS keychain is available
 
-Secrets (the saved keys and the sign-in token) go to the OS keychain through `keyring` when one is available;
-otherwise into the config file, in a directory only its owner can enter, written atomically with mode 600.
+Everything, the saved keys and the sign-in token with it, is in the config file, in a directory only its owner can
+enter, written atomically with mode 600: where `gh`, `gcloud`, `aws` and `stripe` keep theirs. No OS keychain: it
+asks a person to allow each new build of the program, and an agent at a keyboard nobody watches waits on that
+prompt forever.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import secrets
@@ -26,8 +26,6 @@ DEFAULT_ACCOUNTS = "https://app.metaphi.ai"
 DEFAULT_API = "https://api.metaphi.ai/v1/kennet"
 ALLOWED_DOMAIN = "metaphi.ai"
 KEY_PREFIX = "mai_sk_"
-KEYRING_SERVICE = "metaphi-ai"
-SECRETS = ("api_key", "test_api_key", "token", "device_code")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
 
@@ -90,30 +88,6 @@ def path() -> Path:
     return home() / "config.json"
 
 
-def _keyring() -> Any:
-    """The keyring module when an OS keychain backs it, else None."""
-    if os.environ.get("METAPHI_NO_KEYRING") == "1":
-        return None
-    try:
-        import keyring
-        from keyring.backends import fail
-    except Exception:  # noqa: BLE001 - absent or broken: fall back to the file
-        return None
-    try:
-        backend = keyring.get_keyring()
-    except Exception:  # noqa: BLE001
-        return None
-    if isinstance(backend, fail.Keyring) or getattr(backend, "priority", 1) <= 0:
-        return None
-    return keyring
-
-
-def keyring_backend() -> str:
-    """What holds secrets on this machine, for `kennet --debug-keyring`."""
-    kr = _keyring()
-    return f"keyring: {kr.get_keyring()!r}" if kr is not None else f"file: {path()}"
-
-
 def _read_file() -> dict[str, Any]:
     p = path()
     try:
@@ -132,19 +106,7 @@ def _read_file() -> dict[str, Any]:
 
 
 def load() -> dict[str, Any]:
-    cfg = _read_file()
-    kr = _keyring()
-    if kr is not None:
-        for name in SECRETS:
-            if name in cfg:
-                continue
-            try:
-                value = kr.get_password(KEYRING_SERVICE, name)
-            except Exception:  # noqa: BLE001 - a locked or broken keychain reads as empty
-                value = None
-            if value:
-                cfg[name] = value
-    return cfg
+    return _read_file()
 
 
 def _write_file(cfg: dict[str, Any]) -> None:
@@ -169,23 +131,8 @@ def _write_file(cfg: dict[str, Any]) -> None:
 
 
 def save(cfg: dict[str, Any]) -> None:
-    """Keep `cfg`: its secrets in the OS keychain when there is one, the rest (or everything) in the file."""
-    plain = dict(cfg)
-    kr = _keyring()
-    if kr is not None:
-        try:
-            for name in SECRETS:
-                value = plain.pop(name, None)
-                if value:
-                    kr.set_password(KEYRING_SERVICE, name, value)
-                else:
-                    with contextlib.suppress(Exception):  # nothing stored under that name
-                        kr.delete_password(KEYRING_SERVICE, name)
-        except Exception as e:  # noqa: BLE001 - the keychain refused: keep everything in the file instead
-            print(f"kennet: warning: the OS keychain refused the secret ({e}); keeping it in {path()}",
-                  file=sys.stderr)
-            plain = dict(cfg)
-    _write_file(plain)
+    """Keep `cfg` in the config file."""
+    _write_file(dict(cfg))
 
 
 def api_key(flag: str | None = None, test: bool = False) -> str | None:

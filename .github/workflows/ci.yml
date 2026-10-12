@@ -26,7 +26,7 @@ jobs:
           if [ -n "$bad" ]; then echo "::error::the distributions carry files that must not ship:"; echo "$bad"; exit 1; fi
 
   binary:
-    # The release's one-file build, on a PR: it must start and find a real keychain backend.
+    # The release's one-file build, on a PR: it must start.
     strategy:
       matrix:
         os: [macos-14, ubuntu-24.04]
@@ -42,19 +42,9 @@ jobs:
       - run: uv sync --frozen --no-dev --group release --python 3.12
       - name: pyinstaller (as release.yml)
         run: |
-          extra=()
-          if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
           uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name kennet \
-            --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
             src/metaphi/__main__.py
       - run: ./dist/kennet --version
-      - name: the binary loads a real keychain backend
-        run: |
-          got=$(./dist/kennet --debug-keyring)
-          echo "$got"
-          if [ "$RUNNER_OS" = macOS ]; then
-            case "$got" in *keyring.backends.macOS*) ;; *) echo "::error::no macOS Keychain backend in the binary"; exit 1;; esac
-          fi
 
   workflows:
     runs-on: ubuntu-latest

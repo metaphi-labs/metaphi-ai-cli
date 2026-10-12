@@ -67,24 +67,10 @@ jobs:
           enable-cache: false
       - run: uv sync --frozen --no-dev --group release --python 3.12
       - name: pyinstaller
-        # keyring finds its backends through entry-point metadata, which a one-file build drops unless copied;
-        # on Linux the Secret Service backend also needs secretstorage and jeepney bundled.
         run: |
-          extra=()
-          if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
           uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name kennet \
-            --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
             src/metaphi/__main__.py
       - run: ./dist/kennet --version
-      - name: the binary loads a real keychain backend
-        run: |
-          got=$(./dist/kennet --debug-keyring)
-          echo "$got"
-          # macOS runners always have a Keychain; headless Linux runners have no Secret Service to talk to,
-          # so there the binary may fairly fall back to the file.
-          if [ "$RUNNER_OS" = macOS ]; then
-            case "$got" in *keyring.backends.macOS*) ;; *) echo "::error::no macOS Keychain backend in the binary"; exit 1;; esac
-          fi
       - env:
           TARGET: ${{ matrix.target }}
         run: |
