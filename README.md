@@ -1,15 +1,15 @@
-# metaphi
+# kennet
 
-The Metaphi AI command line. Sign in and twin agent traces.
+The command line for Kennet, Metaphi AI's RL infrastructure. Sign in and twin agent traces.
 
 ## Install
 
 ```sh
-brew install metaphi-labs/tap/metaphi    # macOS and Linux
+brew install metaphi-labs/tap/kennet    # macOS and Linux
 ```
 
 No Homebrew? Download the binary for your platform from the
-[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), unpack it and put `metaphi` on your
+[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), unpack it and put `kennet` on your
 `PATH`. Each release lists its `checksums.txt`.
 
 Calling it from Python instead: `pip install metaphi-ai` gives you the same command and the library (see below).
@@ -17,20 +17,20 @@ Calling it from Python instead: `pip install metaphi-ai` gives you the same comm
 ## Quickstart (2 minutes)
 
 ```sh
-metaphi login                  # opens the browser; confirm the code you see in the terminal
-metaphi twin trace.json        # writes trace.twin.json
+kennet login                  # opens the browser; confirm the code you see in the terminal
+kennet twin trace.json        # writes trace.twin.json
 ```
 
-Working through Claude Code? `metaphi skill install`, then ask it to twin the file: see
+Working through Claude Code? `kennet skill install`, then ask it to twin the file: see
 [Driving it from an agent](#driving-it-from-an-agent).
 
-`metaphi login` signs you in as yourself and hands this machine your organization's keys: a live key (`mai_sk_...`)
+`kennet login` signs you in as yourself and hands this machine your organization's keys: a live key (`mai_sk_...`)
 and a test key (`mai_sk_test_...`). They are kept in the OS keychain when there is one (macOS Keychain, Windows
 Credential Locker, Secret Service on Linux), otherwise in the config file, and are never printed. Logging in again
-replaces them; `metaphi logout` revokes them. If your organization has no twinning access yet, the sign-in still
+replaces them; `kennet logout` revokes them. If your organization has no twinning access yet, the sign-in still
 works and says why no key was saved.
 
-`metaphi twin trace.json --test` runs on the test key. Test runs go through the same pipeline but cost nothing; files
+`kennet twin trace.json --test` runs on the test key. Test runs go through the same pipeline but cost nothing; files
 can be at most 256 KiB and an organization gets 20 runs a day. Test twins and live twins never see each other.
 
 Usage, keys, members and billing are in the console at <https://app.metaphi.ai/console>; the work is done here.
@@ -38,13 +38,13 @@ Usage, keys, members and billing are in the console at <https://app.metaphi.ai/c
 ## Driving it from an agent
 
 ```sh
-metaphi skill install          # once per machine: Claude Code now knows this CLI
+kennet skill install          # once per machine: Claude Code now knows this CLI
 ```
 
 That writes the `kennet` skill to `~/.claude/skills/kennet` (`--project` writes it to `./.claude/skills` instead, to commit
 for a team). Then ask Claude for what you want: "twin `trace.jsonl` before I send it to the vendor". The skill is a
-pointer: it tells the agent to run `metaphi skill show`, which prints the guide for the version installed, so the
-guide never goes stale. Any other agent can be handed the output of `metaphi skill show`.
+pointer: it tells the agent to run `kennet skill show`, which prints the guide for the version installed, so the
+guide never goes stale. Any other agent can be handed the output of `kennet skill show`.
 
 The CLI is made to be run by a coding agent (Claude Code and the like) as much as typed. Away from a terminal
 nothing waits on a question, and every command takes `--json`: stdout is then the result, or the error object,
@@ -52,20 +52,20 @@ alone, and progress goes to stderr. An error that one command clears names it: `
 `next_step` in the JSON.
 
 ```sh
-metaphi login --json           # {"verification_uri", "user_code", "expires_in", "next_step": "metaphi login --complete"}
+kennet login --json           # {"verification_uri", "user_code", "expires_in", "next_step": "kennet login --complete"}
                                # the person opens the page and confirms the code
-metaphi login --complete       # waits for the approval (60 s away from a terminal) and saves the keys; safe to run again
-metaphi whoami --json          # asks the server: email, organizations (role, grants, balance), the key in use
-metaphi twin trace.json --no-wait --json    # {"id", "status", "next_step": "metaphi twins wait twin_..."}
-metaphi twins wait twin_... --json          # {"output", "id"} once it ends
-metaphi twins list --json      # the organization's twins, newest first
+kennet login --complete       # waits for the approval (60 s away from a terminal) and saves the keys; safe to run again
+kennet whoami --json          # asks the server: email, organizations (role, grants, balance), the key in use
+kennet twin trace.json --no-wait --json    # {"id", "status", "next_step": "kennet twins wait twin_..."}
+kennet twins wait twin_... --json          # {"output", "id"} once it ends
+kennet twins list --json      # the organization's twins, newest first
 ```
 
-Away from a terminal `metaphi login` is `--no-wait` by itself: it prints the page and the code and returns, so the
+Away from a terminal `kennet login` is `--no-wait` by itself: it prints the page and the code and returns, so the
 agent can show them to its person. `--wait` keeps the old behaviour, one call that waits for the approval.
 
 A twin started is the service's, not the terminal's. Ctrl-C, a closed session or `--timeout` stop the waiting, never
-the twin, and say how to come back: `metaphi twins wait <id>` (add `--test` for a test twin), from any machine
+the twin, and say how to come back: `kennet twins wait <id>` (add `--test` for a test twin), from any machine
 holding the organization's key.
 
 ## Use it from your servers
@@ -74,11 +74,11 @@ A server or CI job has no browser: make it a key of its own in the console and h
 
 ```sh
 export METAPHI_API_KEY=mai_sk_...
-metaphi twin trace.json -o out.json --json
+kennet twin trace.json -o out.json --json
 ```
 
 `METAPHI_API_KEY` overrides whatever is saved. A key you already have can also be saved with
-`metaphi login --with-api-key`, which reads it from stdin (or prompts without echo), so it never lands in your shell
+`kennet login --with-api-key`, which reads it from stdin (or prompts without echo), so it never lands in your shell
 history or the process list.
 
 One trace file in, one twinned file out, in the same format. `--json` prints `{"output", "id"}` on stdout, with
@@ -101,8 +101,8 @@ One key per environment (`prod`, `staging`) or per customer is a good default. R
 | `-o, --output` | Where the twinned trace goes. Default: `<name>.twin<ext>`. |
 | `--key <64 hex>` | Keys the stand-in values. The same key gives a person the same stand-in in every trace, so a corpus stays consistent. Default: a fresh key per trace. |
 | `--confidential <org>` | Replaces an organization even though it is public, e.g. your customer. Repeatable. |
-| `--test` | Runs on the test key `metaphi login` saved: free, small, apart from live twins. |
-| `--no-wait` | Starts the twin and returns its id; `metaphi twins wait <id>` comes back for it. |
+| `--test` | Runs on the test key `kennet login` saved: free, small, apart from live twins. |
+| `--no-wait` | Starts the twin and returns its id; `kennet twins wait <id>` comes back for it. |
 | `--timeout <seconds>` | How long to wait for the twin. The twin goes on past it. |
 
 The organization key comes from `METAPHI_API_KEY`, then the saved key. (`--api-key` still works but is deprecated: an
@@ -134,7 +134,7 @@ from metaphi.twin import twin
 try:
     twin(Path("trace.json"))
 except BillingError:            # out_of_credit
-    ...                         # add credit: `metaphi credits buy`
+    ...                         # add credit: `kennet credits buy`
 except RateLimitError as e:     # rate_limited_concurrent, rate_limited_daily
     ...                         # e.retryable is True: try again when a run ends
 except MetaphiError as e:
@@ -159,17 +159,17 @@ but for the last:
 
 | Code | When | `next_step` |
 | --- | --- | --- |
-| `not_signed_in` | no sign-in on this machine, or the server has ended it | `metaphi login` |
-| `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `metaphi login --complete` |
-| `no_api_key` | signed in, but the organization was handed no key; the message says why | `metaphi whoami` |
-| `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `metaphi login` |
-| `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `metaphi twins wait <id>` |
+| `not_signed_in` | no sign-in on this machine, or the server has ended it | `kennet login` |
+| `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
+| `no_api_key` | signed in, but the organization was handed no key; the message says why | `kennet whoami` |
+| `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
+| `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
 
 Any other error the CLI says itself, such as a file that is not there, is a plain `MetaphiError` with `code` `None`.
 
 ## Your organization
 
-`metaphi whoami` asks the server who you are: your organizations, your role and what each may do, its prepaid balance
+`kennet whoami` asks the server who you are: your organizations, your role and what each may do, its prepaid balance
 when you may see it, and which key calls run on (the saved one, or `METAPHI_API_KEY`), by its last four characters.
 A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
 the console at <https://app.metaphi.ai/console>.
@@ -180,19 +180,19 @@ Each completed trace draws your organization's prepaid credit; a run that fails 
 reaches zero, new runs are refused until credit is added.
 
 ```sh
-metaphi credits                       # the balance (owners, admins and billing members)
-metaphi credits buy --amount 200      # pay through Stripe Checkout in the browser; waits until it lands
+kennet credits                       # the balance (owners, admins and billing members)
+kennet credits buy --amount 200      # pay through Stripe Checkout in the browser; waits until it lands
 ```
 
 Only owners and billing members can buy; a billing member sees the balance and buys credit, nothing else.
 
 ### Running out of credit
 
-When `metaphi twin` is refused with `out_of_credit` at a terminal, and you may buy for your organization, it offers to
+When `kennet twin` is refused with `out_of_credit` at a terminal, and you may buy for your organization, it offers to
 add credit there and then, opens Stripe Checkout, and carries on with the same run once the payment lands:
 
 ```
-$ metaphi twin trace.json
+$ kennet twin trace.json
 acme is out of prepaid credit.
 Add credit now? Amount in $ [100]:
 Pay in the browser:
@@ -207,11 +207,11 @@ it can never start twice. If you may not buy, it names who can and where.
 In CI, a pipe or with `--json` nothing is asked. The command exits 1 with the error and one more line on stderr:
 
 ```
-Add credit: https://app.metaphi.ai/console?add=credit  or run: metaphi credits buy --amount <amount>
+Add credit: https://app.metaphi.ai/console?add=credit  or run: kennet credits buy --amount <amount>
 ```
 
 With `--json` the error object carries the same two things: `action_url`, the page, and `next_step`,
-`metaphi credits buy`, which prints a Stripe Checkout link and waits until it is paid.
+`kennet credits buy`, which prints a Stripe Checkout link and waits until it is paid.
 
 The library never prompts: `twin()` raises `BillingError`, whose `action_url` is the add-credit page when the service
 sent one.
@@ -220,12 +220,12 @@ sent one.
 
 | Variable | Default |
 | --- | --- |
-| `METAPHI_API_KEY` | the key saved by `metaphi login` (or `metaphi login --with-api-key`) |
+| `METAPHI_API_KEY` | the key saved by `kennet login` (or `kennet login --with-api-key`) |
 | `METAPHI_API` | `https://api.metaphi.ai/v1/kennet`, the Kennet API |
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
-| `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `metaphi twin` waits for its twin to end (`--timeout` per call) |
+| `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `kennet twin` waits for its twin to end (`--timeout` per call) |
 | `METAPHI_NO_KEYRING` | unset: secrets go to the OS keychain when one is available; `1` keeps them in the config file |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
 
-Sign out with `metaphi logout`. It ends this sign-in everywhere it is used, revokes the keys `metaphi login`
+Sign out with `kennet logout`. It ends this sign-in everywhere it is used, revokes the keys `kennet login`
 handed out, and clears the saved keys from this machine.

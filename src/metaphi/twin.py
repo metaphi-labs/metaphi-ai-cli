@@ -136,13 +136,13 @@ def _key(api_key: str | None, test: bool) -> str:
     if not key:
         cfg = config.load()
         if not cfg.get("token"):
-            raise accounts.need("no test key: run `metaphi login`, or set METAPHI_API_KEY to a test key" if test else
-                                "no key: run `metaphi login`, or set METAPHI_API_KEY", "not_signed_in",
-                                "metaphi login")
+            raise accounts.need("no test key: run `kennet login`, or set METAPHI_API_KEY to a test key" if test else
+                                "no key: run `kennet login`, or set METAPHI_API_KEY", "not_signed_in",
+                                "kennet login")
         # signed in, and the sign-in was handed no key: signing in again changes nothing until the reason does
         why = cfg.get("no_api_key") or "your organization has no key for this machine yet"
         raise accounts.need(f"no key: {why}. Signed in as {cfg.get('email')}; sign in again once that changes, or "
-                            "set METAPHI_API_KEY", "no_api_key", "metaphi whoami")
+                            "set METAPHI_API_KEY", "no_api_key", "kennet whoami")
     if not key.startswith(config.KEY_PREFIX):
         raise accounts.Error(f"that is not an organization key ({config.KEY_PREFIX}...)")
     return key
@@ -164,7 +164,7 @@ def recent(limit: int = 10, api_key: str | None = None, test: bool = False,
 
 def back(twin_id: str, test: bool = False) -> str:
     """The command that comes back for a twin."""
-    return f"metaphi twins wait {twin_id}" + (" --test" if test else "")
+    return f"kennet twins wait {twin_id}" + (" --test" if test else "")
 
 
 def _finish(h: httpx.Client, made: dict[str, Any], out: Path, say: Callable[[str], None],
@@ -218,7 +218,7 @@ def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_h
          idempotency_key: str | None = None, detach: bool = False) -> dict[str, Any]:
     """Twin one trace file into `out` (default <name>.twin<ext>); answers {"output", "id"}. Waiting past
     `deadline_s` (default `deadline()`) raises a retryable APIError naming the twin, which goes on running.
-    `test` runs on the test key `metaphi login` saved: free, small, apart from live twins. `idempotency_key` makes
+    `test` runs on the test key `kennet login` saved: free, small, apart from live twins. `idempotency_key` makes
     a call the same call as an earlier one that was refused. `detach` answers {"id", "status", "next_step"} once the twin is
     started and writes nothing: `wait` comes back for it. Never prompts: a refusal raises its typed error."""
     key = _key(api_key, test)

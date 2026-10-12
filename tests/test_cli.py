@@ -58,7 +58,7 @@ def test_login_saves_the_live_key_and_the_test_key_it_is_handed(monkeypatch, cap
     cfg = config.load()
     assert (cfg["token"], cfg["api_key"], cfg["test_api_key"]) == ("tok", "mai_sk_live", "mai_sk_test_t")
     out = capsys.readouterr().out
-    assert "Ready for acme" in out and "Next: metaphi twin <file>" in out
+    assert "Ready for acme" in out and "Next: kennet twin <file>" in out
     assert out.splitlines()[-1] == f"Usage, keys, members and billing: {A}/console"
     assert "mai_sk_" not in out
 
@@ -87,7 +87,7 @@ def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch,
     out = capsys.readouterr()
     got = json.loads(out.out)
     assert (got["verification_uri"], got["user_code"]) == (f"{A}/device", "ABCD-EFGH")
-    assert got["next_step"] == "metaphi login --complete" and 0 < got["expires_in"] <= 60
+    assert got["next_step"] == "kennet login --complete" and 0 < got["expires_in"] <= 60
     assert got["status"] == "pending"
     assert code.call_count == 1 and not token.called and "token" not in config.load()
     assert cli.main(["login", "--no-browser", "--json"]) == 0   # asked again: the code a person may hold stands
@@ -95,12 +95,12 @@ def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch,
     assert cli.main(["login", "--complete", "--json", "--timeout", "1"]) == 1   # not approved yet, and said so
     error = json.loads(capsys.readouterr().out)["error"]
     assert (error["code"], error["retryable"], error["next_step"]) == ("authorization_pending", True,
-                                                                         "metaphi login --complete")
+                                                                         "kennet login --complete")
     assert token.call_count == 1 and config.load()["device_code"] == "dc"   # still under way
     assert cli.main(["login", "--complete", "--json"]) == 0
     out = capsys.readouterr()
     assert json.loads(out.out) == {"email": "alice@example.test", "org": "acme", "keys": True,
-                                   "console": f"{A}/console", "next_step": "metaphi twin <file> --test"}
+                                   "console": f"{A}/console", "next_step": "kennet twin <file> --test"}
     assert "ABCD-EFGH" in out.err and "mai_sk_" not in out.out + out.err
     cfg = config.load()
     assert cfg["api_key"] == "mai_sk_live" and "pending" not in cfg and "device_code" not in cfg
@@ -111,8 +111,8 @@ def test_login_complete_with_nothing_under_way_names_the_next_command(capsys):
     assert cli.main(["login", "--complete", "--json"]) == 1
     out = capsys.readouterr()
     error = json.loads(out.out)["error"]
-    assert (error["type"], error["code"], error["next_step"]) == ("auth_error", "login_expired", "metaphi login")
-    assert out.err.endswith("Next: metaphi login\n")
+    assert (error["type"], error["code"], error["next_step"]) == ("auth_error", "login_expired", "kennet login")
+    assert out.err.endswith("Next: kennet login\n")
 
 
 @respx.mock
@@ -135,7 +135,7 @@ def test_whoami_asks_the_server_and_says_the_org_the_balance_and_the_key(monkeyp
     assert "key:    …9999 (METAPHI_API_KEY)" in out and "mai_sk_" not in out
     orgs.respond(401, json={"detail": "no"})   # a sign-in the server has ended is not "signed in"
     assert cli.main(["whoami"]) == 1
-    assert capsys.readouterr().err.endswith("Next: metaphi login\n")
+    assert capsys.readouterr().err.endswith("Next: kennet login\n")
 
 
 def test_signed_in_without_a_key_is_not_told_to_sign_in_again(home, capsys):
@@ -145,8 +145,8 @@ def test_signed_in_without_a_key_is_not_told_to_sign_in_again(home, capsys):
     assert cli.main(["twin", str(home / "t.json"), "--json"]) == 1
     out = capsys.readouterr()
     error = json.loads(out.out)["error"]
-    assert error["code"] == "no_api_key" and error["next_step"] == "metaphi whoami"
-    assert "Acme has no synthetic twinning access yet" in error["message"] and "run `metaphi login`" not in out.err
+    assert error["code"] == "no_api_key" and error["next_step"] == "kennet whoami"
+    assert "Acme has no synthetic twinning access yet" in error["message"] and "run `kennet login`" not in out.err
 
 
 @respx.mock
@@ -158,13 +158,13 @@ def test_logout_clears_the_token_and_both_keys():
     assert out.calls[0].request.headers["authorization"] == "Bearer tok" and config.load() == {}
 
 
-def test_bare_metaphi_prints_the_help_and_the_next_step(capsys):
+def test_bare_kennet_prints_the_help_and_the_next_step(capsys):
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("usage: metaphi") and out.splitlines()[-1] == "Get started: metaphi login"
+    assert out.startswith("usage: kennet") and out.splitlines()[-1] == "Get started: kennet login"
     config.save({"token": "tok", "api_key": "mai_sk_live"})
     assert cli.main([]) == 0
-    assert capsys.readouterr().out.splitlines()[-1] == "Next: metaphi twin <file>"
+    assert capsys.readouterr().out.splitlines()[-1] == "Next: kennet twin <file>"
 
 
 @pytest.mark.parametrize("command", ["keys", "members"])
@@ -265,7 +265,7 @@ def test_a_refusal_raises_its_type_and_keeps_its_code(home, monkeypatch, capsys)
         assert _run(home, monkeypatch) == 1
     err = capsys.readouterr().err   # not a terminal: the error, then where credit is added (an older server: ours)
     assert err.endswith(f"error: {OUT_OF_CREDIT['message']} (code: out_of_credit, request: req_1)\n"
-                        f"Add credit: {A}/console?add=credit  or run: metaphi credits buy --amount <amount>\n")
+                        f"Add credit: {A}/console?add=credit  or run: kennet credits buy --amount <amount>\n")
     with respx.mock:
         _api(created=httpx.Response(402, json={"error": OUT_OF_CREDIT}))
         with pytest.raises(errors.BillingError) as e:
@@ -322,10 +322,10 @@ def test_an_uncoded_answer_is_a_plain_error(home, monkeypatch):
 def test_twin_without_a_key_says_how_to_get_one(home, capsys):
     (home / "t.json").write_text("{}")
     assert cli.main(["twin", str(home / "t.json")]) == 1
-    assert "no key: run `metaphi login`, or set METAPHI_API_KEY" in capsys.readouterr().err
+    assert "no key: run `kennet login`, or set METAPHI_API_KEY" in capsys.readouterr().err
     config.save({"api_key": "mai_sk_live"})   # a live key alone never stands in for the test key
     assert cli.main(["twin", str(home / "t.json"), "--test"]) == 1
-    assert "no test key: run `metaphi login`" in capsys.readouterr().err
+    assert "no test key: run `kennet login`" in capsys.readouterr().err
 
 
 @respx.mock
@@ -440,7 +440,7 @@ def test_declining_the_top_up_is_the_refusal_and_no_retry(home, monkeypatch, cap
         assert _run(home, monkeypatch) == 1
         assert made.call_count == 1 and not checkout.called and len(asked) == len(answers)
     assert capsys.readouterr().err.endswith(
-        f"(code: out_of_credit, request: req_1)\nAdd credit: {ADD}  or run: metaphi credits buy --amount <amount>\n")
+        f"(code: out_of_credit, request: req_1)\nAdd credit: {ADD}  or run: kennet credits buy --amount <amount>\n")
 
 
 @respx.mock
@@ -460,10 +460,10 @@ def test_out_of_credit_away_from_a_terminal_never_asks(home, monkeypatch, capsys
         assert _run(home, monkeypatch, *argv) == 1
         assert made.call_count == 1 and not checkout.called and not asked
     out = capsys.readouterr()
-    assert out.err.endswith(f"Add credit: {ADD}  or run: metaphi credits buy --amount <amount>\n")
+    assert out.err.endswith(f"Add credit: {ADD}  or run: kennet credits buy --amount <amount>\n")
     if argv:
         error = json.loads(out.out)["error"]
-        assert error["action_url"] == ADD and error["next_step"] == "metaphi credits buy"
+        assert error["action_url"] == ADD and error["next_step"] == "kennet credits buy"
 
 
 @respx.mock
@@ -502,7 +502,7 @@ def test_polling_stops_at_its_deadline_naming_the_twin(home, monkeypatch):
     with pytest.raises(errors.APIError) as e:
         twin.twin(home / "trace.json", say=lambda s: None, sleep=sleep, deadline_s=30, clock=lambda: now[0])
     assert e.value.code == "timed_out" and e.value.retryable and e.value.run_id == "twin_t1"
-    assert e.value.next_step == "metaphi twins wait twin_t1" and e.value.next_step in str(e.value)
+    assert e.value.next_step == "kennet twins wait twin_t1" and e.value.next_step in str(e.value)
     assert now[0] <= 30
     assert not (home / "trace.twin.json").exists()
     monkeypatch.setenv("METAPHI_TWIN_TIMEOUT", "90")
@@ -538,11 +538,11 @@ def test_no_wait_starts_a_twin_and_twins_wait_comes_back_for_it(home, monkeypatc
     made, polls, got = _api(statuses=("running", "running", "completed"))
     assert _run(home, monkeypatch, "--no-wait", "--json") == 0
     out = capsys.readouterr()
-    assert json.loads(out.out) == {"id": "twin_t1", "status": "queued", "next_step": "metaphi twins wait twin_t1"}
+    assert json.loads(out.out) == {"id": "twin_t1", "status": "queued", "next_step": "kennet twins wait twin_t1"}
     assert made.call_count == 1 and not polls.called and not (home / "trace.twin.json").exists()
     monkeypatch.chdir(home)
     assert cli.main(["twins", "get", "twin_t1"]) == 0
-    assert capsys.readouterr().out.splitlines()[-1] == "Next: metaphi twins wait twin_t1"
+    assert capsys.readouterr().out.splitlines()[-1] == "Next: kennet twins wait twin_t1"
     assert cli.main(["twins", "wait", "twin_t1", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {"output": "trace.twin.json", "id": "twin_t1"}
     assert (home / "trace.twin.json").read_text() == '{"user": "Morgan"}' and got.call_count == 1
@@ -573,20 +573,20 @@ def test_stopping_the_wait_says_the_twin_goes_on_and_how_to_come_back(home, monk
     said = []
     with pytest.raises(KeyboardInterrupt):
         twin.twin(home / "trace.json", say=said.append, sleep=stop)
-    assert said[-1] == "stopped waiting; twin_t1 goes on. Come back for it: metaphi twins wait twin_t1"
+    assert said[-1] == "stopped waiting; twin_t1 goes on. Come back for it: kennet twins wait twin_t1"
 
 
 def test_help_is_a_command_and_shows_the_examples(capsys):
     assert cli.main(["help"]) == 0
-    assert "metaphi twins wait" in capsys.readouterr().out
+    assert "kennet twins wait" in capsys.readouterr().out
 
 
 def test_skill_install_writes_a_stub_that_sends_the_agent_to_the_binarys_own_guide(home, capsys):
     assert cli.main(["skill", "install", "--json"]) == 0
     path = home / "claude" / "skills" / "kennet" / "SKILL.md"
-    assert json.loads(capsys.readouterr().out) == {"path": str(path), "next_step": "metaphi skill show"}
+    assert json.loads(capsys.readouterr().out) == {"path": str(path), "next_step": "kennet skill show"}
     text = path.read_text()
-    assert text.startswith("---\nname: kennet\ndescription: ") and "metaphi skill show" in text
+    assert text.startswith("---\nname: kennet\ndescription: ") and "kennet skill show" in text
     assert cli.main(["skill", "install"]) == 0   # again: ours, so replaced
     assert cli.main(["skill", "install", "--project"]) == 0
     assert (home / ".claude" / "skills" / "kennet" / "SKILL.md").read_text() == text
@@ -600,11 +600,11 @@ def test_skill_install_writes_a_stub_that_sends_the_agent_to_the_binarys_own_gui
 
 
 def test_the_guide_names_only_commands_and_flags_the_parser_takes(capsys):
-    """The guide is the contract an agent follows: every `metaphi ...` line in it has to parse."""
+    """The guide is the contract an agent follows: every `kennet ...` line in it has to parse."""
     assert cli.main(["skill", "show"]) == 0
     guide = capsys.readouterr().out
-    assert guide == skill.GUIDE and f"metaphi {cli.__version__}" in guide.splitlines()[0]
-    lines = [x.split("#")[0].strip() for x in guide.splitlines() if x.startswith("metaphi ")]
+    assert guide == skill.GUIDE and f"kennet {cli.__version__}" in guide.splitlines()[0]
+    lines = [x.split("#")[0].strip() for x in guide.splitlines() if x.startswith("kennet ")]
     assert len(lines) >= 10
     for line in lines:
         argv = [{"twin_...": "twin_t1", "<dollars>": "5"}.get(w, w) for w in line.split()[1:]]

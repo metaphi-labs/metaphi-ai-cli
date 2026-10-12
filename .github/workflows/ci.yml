@@ -44,13 +44,13 @@ jobs:
         run: |
           extra=()
           if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
-          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name metaphi \
+          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name kennet \
             --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
             src/metaphi/__main__.py
-      - run: ./dist/metaphi --version
+      - run: ./dist/kennet --version
       - name: the binary loads a real keychain backend
         run: |
-          got=$(./dist/metaphi --debug-keyring)
+          got=$(./dist/kennet --debug-keyring)
           echo "$got"
           if [ "$RUNNER_OS" = macOS ]; then
             case "$got" in *keyring.backends.macOS*) ;; *) echo "::error::no macOS Keychain backend in the binary"; exit 1;; esac

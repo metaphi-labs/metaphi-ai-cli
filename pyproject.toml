@@ -8,7 +8,7 @@ license = "Apache-2.0"
 dependencies = ["httpx>=0.28", "keyring>=25.7"]
 
 [project.scripts]
-metaphi = "metaphi.cli:main"
+kennet = "metaphi.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "respx>=0.22"]

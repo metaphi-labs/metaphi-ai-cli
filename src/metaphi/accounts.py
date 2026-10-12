@@ -100,8 +100,8 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
     asks first and waits after: for a call that comes back to a code shown a while ago."""
     held = pending()
     if held is None:
-        raise need("no sign-in is under way, or its code expired; run `metaphi login`", "login_expired",
-                   "metaphi login")
+        raise need("no sign-in is under way, or its code expired; run `kennet login`", "login_expired",
+                   "kennet login")
     device_code, interval = config.load()["device_code"], float(held["interval"])
     until = held["expires"] if wait_s is None else min(held["expires"], time.time() + wait_s)
     first = at_once
@@ -133,16 +133,16 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
                 interval += 5
                 continue
             _forget()
-            raise need({"expired_token": "the code expired; run `metaphi login` again",
+            raise need({"expired_token": "the code expired; run `kennet login` again",
                         "access_denied": "the sign-in was declined"}.get(error, _said(r)),
-                       "login_expired" if error == "expired_token" else "login_refused", "metaphi login")
+                       "login_expired" if error == "expired_token" else "login_refused", "kennet login")
     if time.time() + interval < held["expires"]:
         e = need(f"not approved yet: the code {held['user_code']} waits at {held['open']}", "authorization_pending",
-                 "metaphi login --complete")
+                 "kennet login --complete")
         e.retryable = True
         raise e
     _forget()
-    raise need("the code expired; run `metaphi login` again", "login_expired", "metaphi login")
+    raise need("the code expired; run `kennet login` again", "login_expired", "kennet login")
 
 
 def _forget() -> None:
@@ -176,7 +176,7 @@ def logout() -> None:
 def _person() -> dict[str, str]:
     token = config.load().get("token")
     if not token:
-        raise need("not signed in; run `metaphi login`", "not_signed_in", "metaphi login")
+        raise need("not signed in; run `kennet login`", "not_signed_in", "kennet login")
     return {"authorization": f"Bearer {token}"}
 
 
@@ -185,7 +185,7 @@ def call(method: str, path: str, **kw: Any) -> Any:
     with _http() as h:
         r = h.request(method, path, headers=_person(), **kw)
     if r.status_code == 401:
-        raise need("your sign-in has ended; run `metaphi login`", "not_signed_in", "metaphi login")
+        raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
     if r.status_code >= 400:
         raise Error(_said(r))
     return r.json()
@@ -234,4 +234,4 @@ def buy(org_id: str, usd: float, say: Callable[[str], None] = print, open_browse
         got = call("GET", f"/credits/orgs/{org_id}/checkout/{made['id']}")
         if got.get("paid"):
             return got
-    raise Error("the checkout was not paid in time; run `metaphi credits` to see the balance")
+    raise Error("the checkout was not paid in time; run `kennet credits` to see the balance")

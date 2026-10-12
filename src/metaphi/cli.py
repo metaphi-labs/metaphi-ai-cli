@@ -1,7 +1,7 @@
-"""metaphi: the Metaphi AI command line.
+"""kennet: the command line for Kennet, Metaphi AI's RL infrastructure.
 
-    metaphi login                        sign in through the browser; your organization's keys come with it
-    metaphi twin trace.json              twin a trace with that key
+    kennet login                        sign in through the browser; your organization's keys come with it
+    kennet twin trace.json              twin a trace with that key
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
 the result (or the error object) alone on stdout while progress goes to stderr, and an error that one command
@@ -26,8 +26,8 @@ class _OnArgv(argparse.Action):
     """A secret passed as an argument: still accepted, but it lands in shell history and `ps`, so say so."""
 
     def __call__(self, p: argparse.ArgumentParser, ns: argparse.Namespace, value: object, opt: str | None = None):
-        print(f"metaphi: warning: {opt} puts the key in your shell history and process list and will be removed; "
-              "use METAPHI_API_KEY or `metaphi login --with-api-key` (reads stdin)", file=sys.stderr)
+        print(f"kennet: warning: {opt} puts the key in your shell history and process list and will be removed; "
+              "use METAPHI_API_KEY or `kennet login --with-api-key` (reads stdin)", file=sys.stderr)
         setattr(ns, self.dest, value)
 
 
@@ -61,18 +61,18 @@ def _signed_in(a: argparse.Namespace, got: dict) -> None:
     console = f"{config.accounts_url()}/console"
     if cfg.get("test_api_key"):
         _out(a, {"email": got.get("email"), "org": got.get("org"), "keys": True, "console": console,
-                 "next_step": "metaphi twin <file> --test"},
+                 "next_step": "kennet twin <file> --test"},
              f"Signed in as {got.get('email')}.",
              f"Ready for {got.get('org')}: its live key and test key are saved on this machine.",
-             "Next: metaphi twin <file>   (--test for a free test run)",
-             "" if skill.installed() else "Working through Claude Code? `metaphi skill install` teaches it this CLI.",
+             "Next: kennet twin <file>   (--test for a free test run)",
+             "" if skill.installed() else "Working through Claude Code? `kennet skill install` teaches it this CLI.",
              f"Usage, keys, members and billing: {console}")
         return
     why = got.get("no_api_key") or "the server sent none"
     _out(a, {"email": got.get("email"), "org": got.get("org"), "keys": False, "no_api_key": why, "console": console},
          f"Signed in as {got.get('email')}.",
          f"No key was saved: {why}.",
-         "Signing in again changes nothing until that does; then `metaphi login` hands the keys over.",
+         "Signing in again changes nothing until that does; then `kennet login` hands the keys over.",
          f"Usage, keys, members and billing: {console}")
 
 
@@ -101,10 +101,10 @@ def cmd_login(a: argparse.Namespace) -> None:
             accounts.webbrowser.open(held["open"])
         _out(a, {"verification_uri": held["verification_uri"], "verification_uri_complete": held["open"],
                  "user_code": held["user_code"], "expires_in": int(held["expires"] - time.time()), "status": "pending",
-                 "next_step": "metaphi login --complete"},
+                 "next_step": "kennet login --complete"},
              f"Open {held['verification_uri']} and enter the code {held['user_code']}",
              f"(or open {held['open']})" if held["open"] != held["verification_uri"] else "",
-             "Next: metaphi login --complete   (waits for the approval; safe to run again)")
+             "Next: kennet login --complete   (waits for the approval; safe to run again)")
         return
     _signed_in(a, accounts.login(say=say, open_browser=not a.no_browser))
 
@@ -124,7 +124,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     env = os.environ.get("METAPHI_API_KEY")
     key = env or cfg.get("api_key")
     if not cfg.get("token") and not key:
-        raise accounts.need("not signed in; run `metaphi login`", "not_signed_in", "metaphi login")
+        raise accounts.need("not signed in; run `kennet login`", "not_signed_in", "kennet login")
     orgs, credit = [], {}
     if cfg.get("token"):
         orgs = accounts.orgs()   # a sign-in that has ended is refused here
@@ -145,7 +145,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
         lines.append(f"org:    {o['id']} ({o['role']}) holds {', '.join(o['grants']) or 'nothing yet'}"
                      + (f"; ${o['credits_usd']:,.2f} prepaid credit" if "credits_usd" in o else ""))
     lines.append(f"key:    {got['key']['hint']} ({got['key']['source']})" if key else
-                 f"key:    none ({got.get('no_api_key') or 'run `metaphi login`'})")
+                 f"key:    none ({got.get('no_api_key') or 'run `kennet login`'})")
     if got["test_key"]:
         lines.append(f"test:   {got['test_key']}")
     _out(a, got, *lines)
@@ -191,7 +191,7 @@ def _line(t: dict) -> str:
 def cmd_twins_list(a: argparse.Namespace) -> None:
     from metaphi.twin import recent
     got = recent(a.limit, test=a.test)
-    _out(a, {"data": got}, *([_line(t) for t in got] or ["no twins yet: metaphi twin <file>"]))
+    _out(a, {"data": got}, *([_line(t) for t in got] or ["no twins yet: kennet twin <file>"]))
 
 
 def cmd_twins_get(a: argparse.Namespace) -> None:
@@ -275,9 +275,9 @@ def cmd_credits(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     out = o["credits_usd"] <= 0
     _out(a, {"org": o["id"], "credits_usd": o["credits_usd"], "can_buy": bool(o.get("can_buy")),
-             **({"next_step": "metaphi credits buy"} if out and o.get("can_buy") else {})},
+             **({"next_step": "kennet credits buy"} if out and o.get("can_buy") else {})},
          f"{o['id']}: ${o['credits_usd']:,.2f} prepaid credit",
-         *(["Runs are refused until credit is added" + (": `metaphi credits buy`." if o.get("can_buy") else
+         *(["Runs are refused until credit is added" + (": `kennet credits buy`." if o.get("can_buy") else
                                                        "; ask an owner or billing member to add it.")] if out else []))
 
 
@@ -290,8 +290,8 @@ def cmd_credits_buy(a: argparse.Namespace) -> None:
 
 def cmd_skill_install(a: argparse.Namespace) -> None:
     path = skill.install(a.project, a.force)
-    _out(a, {"path": str(path), "next_step": "metaphi skill show"},
-         f"wrote {path}", "Claude Code now reaches for `metaphi` when a trace needs twinning; start a new session.")
+    _out(a, {"path": str(path), "next_step": "kennet skill show"},
+         f"wrote {path}", "Claude Code now reaches for `kennet` when a trace needs twinning; start a new session.")
 
 
 def cmd_skill_remove(a: argparse.Namespace) -> None:
@@ -301,18 +301,18 @@ def cmd_skill_remove(a: argparse.Namespace) -> None:
 
 EXAMPLES = """\
 examples:
-  metaphi login                      sign in; your organization's keys are saved on this machine
-  metaphi whoami                     who you are, your organization, its balance, the key in use
-  metaphi twin trace.json --test     a free test twin, written to trace.twin.json
-  metaphi twin trace.json --no-wait  start a twin and return its id
-  metaphi twins list                 your organization's twins, newest first
-  metaphi twins wait twin_...        come back for a twin: wait until it ends, write its file
+  kennet login                      sign in; your organization's keys are saved on this machine
+  kennet whoami                     who you are, your organization, its balance, the key in use
+  kennet twin trace.json --test     a free test twin, written to trace.twin.json
+  kennet twin trace.json --no-wait  start a twin and return its id
+  kennet twins list                 your organization's twins, newest first
+  kennet twins wait twin_...        come back for a twin: wait until it ends, write its file
 
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
-  metaphi skill install              teach Claude Code this CLI (once per machine)
-  metaphi skill show                 the guide an agent follows, for this version
-  metaphi login --json               prints the page and the code, and returns
-  metaphi login --complete           waits for the approval, saves the keys
+  kennet skill install              teach Claude Code this CLI (once per machine)
+  kennet skill show                 the guide an agent follows, for this version
+  kennet login --json               prints the page and the code, and returns
+  kennet login --complete           waits for the approval, saves the keys
 """
 
 
@@ -321,9 +321,9 @@ def _json_flag(s: argparse.ArgumentParser) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="metaphi", description="The Metaphi AI command line.", epilog=EXAMPLES,
+    p = argparse.ArgumentParser(prog="kennet", description="Kennet, Metaphi AI's RL infrastructure, from the command line.", epilog=EXAMPLES,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--version", action="version", version=f"metaphi {__version__}")
+    p.add_argument("--version", action="version", version=f"kennet {__version__}")
     p.add_argument("--debug-keyring", nargs=0, action=_DebugKeyring, help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="command", metavar="<command>")
 
@@ -335,7 +335,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--no-browser", action="store_true", help="print the link instead of opening it")
     how = s.add_mutually_exclusive_group()
     how.add_argument("--no-wait", action="store_true", help="print the page and the code and return; "
-                     "`metaphi login --complete` finishes it. The default away from a terminal")
+                     "`kennet login --complete` finishes it. The default away from a terminal")
     how.add_argument("--complete", action="store_true", help="wait for the approval of the sign-in under way and "
                      "save the keys")
     how.add_argument("--wait", action="store_true", help="wait for the approval in this call, even away from a "
@@ -368,9 +368,9 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--key", help="64 hex characters: the same key gives a person the same stand-in in every trace")
     s.add_argument("--confidential", action="append", help="an organization to replace although public; repeatable")
     s.add_argument("--test", action="store_true",
-                   help="run on the test key `metaphi login` saved: free, small, kept apart from live twins")
+                   help="run on the test key `kennet login` saved: free, small, kept apart from live twins")
     s.add_argument("--api-key", action=_OnArgv, help="deprecated: set METAPHI_API_KEY instead")
-    s.add_argument("--no-wait", action="store_true", help="start the twin and return its id; `metaphi twins wait "
+    s.add_argument("--no-wait", action="store_true", help="start the twin and return its id; `kennet twins wait "
                    "<id>` comes back for it")
     _json_flag(s)
     s.add_argument("--timeout", type=_seconds, help="seconds to wait for the twin (default METAPHI_TWIN_TIMEOUT, or "
@@ -401,7 +401,7 @@ def parser() -> argparse.ArgumentParser:
     v = verbs.add_parser("install", help="write the skill where Claude Code reads it (~/.claude/skills/kennet)")
     v.add_argument("--project", action="store_true", help="into this directory's .claude/skills instead, to commit "
                    "for a team")
-    v.add_argument("--force", action="store_true", help="replace a skill file there that metaphi did not write")
+    v.add_argument("--force", action="store_true", help="replace a skill file there that kennet did not write")
     _json_flag(v)
     v.set_defaults(fn=cmd_skill_install)
     verbs.add_parser("show", help="print the guide an agent follows, for this version").set_defaults(
@@ -422,9 +422,9 @@ def main(argv: list[str] | None = None) -> int:
     p = parser()
     a = p.parse_args(argv)
     try:
-        if a.command is None:  # bare `metaphi`: the help, and the one next step
+        if a.command is None:  # bare `kennet`: the help, and the one next step
             p.print_help()
-            print("\nNext: metaphi twin <file>" if config.api_key() else "\nGet started: metaphi login")
+            print("\nNext: kennet twin <file>" if config.api_key() else "\nGet started: kennet login")
             return 0
         a.fn(a)
     except config.Error as e:
@@ -433,12 +433,12 @@ def main(argv: list[str] | None = None) -> int:
         advice = getattr(error, "advice", None)
         if error.code == "out_of_credit":  # where it is paid, and the command that pays it and waits
             error.action_url = _credit_url(error)
-            error.next_step = None if advice else "metaphi credits buy"
+            error.next_step = None if advice else "kennet credits buy"
         if getattr(a, "json", False):
             print(json.dumps({"error": error.to_dict()}, indent=2))
         print(f"error: {error}", file=sys.stderr)
         if error.code == "out_of_credit":
-            print(advice or f"Add credit: {error.action_url}  or run: metaphi credits buy --amount <amount>",
+            print(advice or f"Add credit: {error.action_url}  or run: kennet credits buy --amount <amount>",
                   file=sys.stderr)
         elif error.next_step:
             print(f"Next: {error.next_step}", file=sys.stderr)

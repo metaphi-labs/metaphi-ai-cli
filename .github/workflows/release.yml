@@ -2,7 +2,7 @@ name: release
 # A tag v<version> ships that version three ways, as Stripe ships its CLI:
 #   pip install metaphi-ai                  PyPI, by trusted publishing (no token stored anywhere), with PEP 740
 #                                           attestations
-#   brew install metaphi-labs/tap/metaphi   metaphi-labs/homebrew-tap writes its formula from this release
+#   brew install metaphi-labs/tap/kennet    metaphi-labs/homebrew-tap writes its formula from this release
 #   a single binary per platform            attached to the GitHub release with checksums.txt, each with a
 #                                           build provenance attestation (`gh attestation verify`)
 # Every action is pinned to a commit; every Python dependency, PyInstaller included, comes from uv.lock.
@@ -72,13 +72,13 @@ jobs:
         run: |
           extra=()
           if [ "$RUNNER_OS" = Linux ]; then extra=(--collect-submodules secretstorage --collect-submodules jeepney); fi
-          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name metaphi \
+          uv run --frozen --no-sync pyinstaller --log-level WARN --onefile --name kennet \
             --copy-metadata keyring --collect-submodules keyring.backends "${extra[@]}" \
             src/metaphi/__main__.py
-      - run: ./dist/metaphi --version
+      - run: ./dist/kennet --version
       - name: the binary loads a real keychain backend
         run: |
-          got=$(./dist/metaphi --debug-keyring)
+          got=$(./dist/kennet --debug-keyring)
           echo "$got"
           # macOS runners always have a Keychain; headless Linux runners have no Secret Service to talk to,
           # so there the binary may fairly fall back to the file.
@@ -88,11 +88,11 @@ jobs:
       - env:
           TARGET: ${{ matrix.target }}
         run: |
-          tar -C dist -czf "metaphi_${GITHUB_REF_NAME#v}_${TARGET}.tar.gz" metaphi
+          tar -C dist -czf "kennet_${GITHUB_REF_NAME#v}_${TARGET}.tar.gz" kennet
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
-          path: metaphi_*.tar.gz
+          path: kennet_*.tar.gz
 
   pypi:
     needs: [test, build, binary]
@@ -121,12 +121,12 @@ jobs:
         with:
           pattern: "*-*"
           merge-multiple: true
-      - run: sha256sum metaphi_*.tar.gz > checksums.txt
+      - run: sha256sum kennet_*.tar.gz > checksums.txt
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            metaphi_*.tar.gz
+            kennet_*.tar.gz
             checksums.txt
-      - run: gh release create "$GITHUB_REF_NAME" metaphi_*.tar.gz checksums.txt --repo "$GITHUB_REPOSITORY" --generate-notes
+      - run: gh release create "$GITHUB_REF_NAME" kennet_*.tar.gz checksums.txt --repo "$GITHUB_REPOSITORY" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
