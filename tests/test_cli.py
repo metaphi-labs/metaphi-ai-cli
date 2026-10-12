@@ -413,14 +413,6 @@ def test_the_library_raises_with_the_action_url_and_never_asks(home, monkeypatch
 
 
 @respx.mock
-def test_credits_at_zero_offers_the_top_up_at_a_terminal(monkeypatch, capsys):
-    _, checkout, asked = _out_of_credit(monkeypatch, ["250"])
-    assert cli.main(["credits"]) == 0
-    assert json.loads(checkout.calls[0].request.content) == {"usd": 250.0} and len(asked) == 1
-    assert capsys.readouterr().out.splitlines()[-1] == "Paid. acme: $100.00 prepaid credit"
-
-
-@respx.mock
 def test_polling_stops_at_its_deadline_naming_the_twin(home, monkeypatch):
     _api(statuses=("running",) * 50)
     (home / "trace.json").write_text("{}")

@@ -169,9 +169,6 @@ def cmd_credits(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     print(f"{o['id']}: ${o['credits_usd']:,.2f} prepaid credit")
     if o["credits_usd"] <= 0:
-        if o.get("can_buy") and _interactive():
-            _top_up(o)
-            return
         print("Runs are refused until credit is added" + (": `metaphi credits buy`." if o.get("can_buy") else
                                                          "; ask an owner or billing member to add it."))
 
