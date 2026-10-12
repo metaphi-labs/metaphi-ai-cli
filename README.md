@@ -31,7 +31,7 @@ replaces them; `kennet logout` revokes them. If your organization has no twinnin
 works and says why no key was saved.
 
 `kennet twin trace.json --test` runs on the test key. Test runs go through the same pipeline but cost nothing; files
-can be at most 256 KiB and an organization gets 20 runs a day. Test twins and live twins never see each other.
+can be at most 2 MiB and an organization gets one test run in all, so use it on a representative file. Test twins and live twins never see each other.
 
 Usage, keys, members and billing are in the console at <https://app.metaphi.ai/console>; the work is done here.
 

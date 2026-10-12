@@ -62,9 +62,10 @@ their data goes.
   command that fails does so quickly; waiting longer is yours to do.
 - Never ask the user for an organization key (`mai_sk_...`), never print one, never pass one as an argument. They
   are saved by `kennet login` or come from `METAPHI_API_KEY`.
-- Start with a test run (`--test`): it is free, and it is a real twin of the user's file through the same
-  pipeline, only limited in size and runs a day. A live run draws the organization's prepaid credit: ask the
-  user before the first one, even after a good test run.
+- An organization has one free test run in all (`--test`): a real twin through the same pipeline, of a file up
+  to 2 MiB. Spend it on a representative file, and ask the user which one before you do. Once it is used the
+  refusal is `test_runs_used`: runs from then on are live. A live run draws the organization's prepaid credit:
+  ask the user before the first one, even after a good test run.
 - When a step needs the user and they are not there, stop and hand back what they have to do. Do not work around it.
 - When something fails that you cannot clear, quote `error.request_id` to the user, or `error.run_id` (the twin's
   id) for a run that failed.
@@ -116,7 +117,7 @@ before it saved on any machine.
 ## 3. Twin a file
 
 ```sh
-kennet twin trace.json --test --json        # free; file at most 256 KiB; 20 test runs a day per organization
+kennet twin trace.json --test --json        # free; file at most 2 MiB; one test run in all per organization
 kennet twin trace.json --json               # live; draws prepaid credit
 ```
 
