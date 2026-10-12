@@ -1,11 +1,11 @@
 [project]
 name = "metaphi-ai"
-version = "0.1.9"
+version = "0.1.10"
 description = "The Metaphi AI command line: sign in and twin traces."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-dependencies = ["httpx>=0.28", "keyring>=25.7"]
+dependencies = ["httpx>=0.28"]
 
 [project.scripts]
 kennet = "metaphi.cli:main"

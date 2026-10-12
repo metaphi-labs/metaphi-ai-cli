@@ -87,11 +87,10 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
   - `kennet org create <name>`: the user is in no organization. Ask them what theirs is called, then make it:
     `kennet org create "Acme Robotics" --json`. They own it. `"admission": "pending"` means Metaphi AI has to
     approve it, which takes a person on their side: tell the user they will get an email, and stop. Once they
-    say it came, run step 2. `"admission": "admitted"` means run step 2 now.
-  - `kennet login`: keys are handed over at sign-in only, so run step 2 once: if the organization has been given
-    access since, it saves the keys. If step 2 ends in `no_api_key` again, tell the user the message as it is,
-    and stop.
-  - null: the organization waits for Metaphi AI's approval. Tell the user the message as it is, and stop.
+    say it came, run `kennet login --json`. `"admission": "admitted"` means run it now.
+  - `kennet login`: run `kennet login --json` once. The machine is signed in, so it opens no browser: it asks
+    for the keys by the sign-in it holds and saves them if the organization has access now. If it ends in
+    `no_api_key` again, tell the user the message as it is, and stop.
 - Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
 - Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists only those the user
   manages (owner or admin), with `credits_usd`, the prepaid balance, when they may see it; it is empty for a member.
@@ -120,7 +119,8 @@ This waits up to 60 seconds for the approval (`--timeout <seconds>` changes that
 means the sign-in worked and no key came with it; `error.message` says why. `next_step` is
 `kennet org create <name>` when the user is in no organization (step 1 says how), and null otherwise (the
 organization waits for approval, or has no access): tell the user, and stop. Each sign-in replaces the keys the one
-before it saved on any machine.
+before it saved on any machine. On a machine that is signed in already, `kennet login --json` opens no browser and
+returns this result at once.
 
 ## 3. Twin a file
 
@@ -168,7 +168,7 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 | --- | --- |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
-| `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet org create <name>`, the user is in no organization: make theirs (step 1). If it is `kennet login`, do step 2 once: it picks the keys up if access was given since. If it is null, tell the user the message and stop. |
+| `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet org create <name>`, the user is in no organization: make theirs (step 1). If it is `kennet login`, run `kennet login --json` once: it picks the keys up, with no browser, if access was given since. If it comes back `no_api_key` again, tell the user the message and stop. |
 | `invalid_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
 | `insufficient_scope` | The key does not hold twinning access. Tell the user. |
 | `auth_unavailable`, `unavailable`, `balance_unavailable`, `unreachable` | The service could not answer; nothing was started. Wait `retry_after_s` (30 seconds when absent), run the same command once more, then stop and tell the user with the `request_id`. |
@@ -187,8 +187,6 @@ kennet credits --json                       # {{"org", "credits_usd", "can_buy"}
 ```
 
 Only owners, admins and billing members see it; anyone else gets an error saying so.
-
-Usage, keys, members and billing are in the console: {config.DEFAULT_ACCOUNTS}/console
 """
 
 

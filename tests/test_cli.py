@@ -13,7 +13,6 @@ A = config.DEFAULT_ACCOUNTS
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("METAPHI_HOME", str(tmp_path / "cfg"))
-    monkeypatch.setenv("METAPHI_NO_KEYRING", "1")
     for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_API", "METAPHI_ALLOW_CUSTOM_HOST"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
@@ -59,8 +58,7 @@ def test_login_saves_the_live_key_and_the_test_key_it_is_handed(monkeypatch, cap
     assert (cfg["token"], cfg["api_key"], cfg["test_api_key"]) == ("tok", "mai_sk_live", "mai_sk_test_t")
     out = capsys.readouterr().out
     assert "Ready for acme" in out and "Next: kennet twin <file>" in out
-    assert out.splitlines()[-1] == f"Usage, keys, members and billing: {A}/console"
-    assert "mai_sk_" not in out
+    assert "console" not in out and "mai_sk_" not in out
 
 
 @respx.mock
@@ -71,7 +69,7 @@ def test_login_with_no_key_handed_over_says_why_and_still_signs_in(monkeypatch, 
     got = capsys.readouterr()
     out = got.out
     assert "No key was saved: Acme has no synthetic twinning access yet" in out and "Ready for" not in out
-    assert out.splitlines()[-1] == f"Usage, keys, members and billing: {A}/console"
+    assert out.splitlines()[-1] == "`kennet login` picks the keys up once that changes, with no second sign-in."
     assert "Next:" not in out + got.err and "(code: no_api_key)" in got.err
     cfg = config.load()   # signed in; a key saved by hand stays, the last login's test key is gone
     assert cfg["token"] == "tok" and cfg["api_key"] == "mai_sk_mine" and "test_api_key" not in cfg
@@ -102,7 +100,7 @@ def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch,
     assert cli.main(["login", "--complete", "--json"]) == 0
     out = capsys.readouterr()
     assert json.loads(out.out) == {"email": "alice@example.test", "org": "acme", "keys": True,
-                                   "console": f"{A}/console", "next_step": "kennet twin <file> --test"}
+                                   "next_step": "kennet twin <file> --test"}
     assert "ABCD-EFGH" in out.err and "mai_sk_" not in out.out + out.err
     cfg = config.load()
     assert cfg["api_key"] == "mai_sk_live" and "pending" not in cfg and "device_code" not in cfg
@@ -131,10 +129,10 @@ def test_whoami_asks_the_server_and_says_the_org_the_balance_and_the_key(monkeyp
         "email": "alice@example.test", "org": "acme",
         "organizations": [{"id": "acme", "role": "owner", "grants": ["twin"], "credits_usd": 12.5, "can_buy": True}],
         "key": {"source": "saved", "hint": "…abcd", "status": "ok"},
-        "test_key": {"source": "saved", "hint": "…wxyz", "status": "ok"}, "console": f"{A}/console"}
+        "test_key": {"source": "saved", "hint": "…wxyz", "status": "ok"}}
     # each key was asked of the twin service, as itself
-    assert [c.request.headers["authorization"] for c in checked.calls] == ["Bearer mai_sk_live_abcd",
-                                                                           "Bearer mai_sk_test_wxyz"]
+    assert sorted(c.request.headers["authorization"] for c in checked.calls) == [   # asked side by side
+        "Bearer mai_sk_live_abcd", "Bearer mai_sk_test_wxyz"]
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_env_9999")
     assert cli.main(["whoami"]) == 0
     out = capsys.readouterr().out
@@ -179,17 +177,38 @@ def test_a_person_in_no_organization_makes_theirs_and_is_told_it_waits_for_appro
     assert json.loads(made.calls[-1].request.content) == {"name": "Acme"}
     assert made.calls[-1].request.headers["authorization"] == "Bearer tok"
     assert json.loads(capsys.readouterr().out) == {"id": "acme", "name": "Acme", "role": "owner",
-                                                   "admission": "pending", "next_step": None}
-    # until the approval there is no command to run: whoami says the organization waits, and names none
+                                                   "admission": "pending", "next_step": "kennet login"}
+    # until the approval whoami says the organization waits, and names the command that picks the keys up
     respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": [], "admission": "pending"}])
     respx.get(f"{A}/credits/orgs").respond(json=[])
     assert cli.main(["whoami"]) == cli.AUTH
     got = capsys.readouterr()
     assert "org:    acme (owner) waits for Metaphi AI to approve it" in got.out
-    assert "waiting for Metaphi AI to approve it" in got.err and "Next:" not in got.err
+    assert "waiting for Metaphi AI to approve it" in got.err and got.err.endswith("Next: kennet login\n")
     assert cli.main(["whoami", "--json"]) == cli.AUTH
     seen = json.loads(capsys.readouterr().out)
-    assert seen["error"]["next_step"] is None and seen["organizations"][0]["admission"] == "pending"
+    assert seen["error"]["next_step"] == "kennet login" and seen["organizations"][0]["admission"] == "pending"
+    # signed in already, `kennet login` opens no browser: it asks for the keys by the token this machine holds
+    pick = respx.post(f"{A}/keys/cli").respond(json={
+        "email": "alice@example.test", "org": "acme", "no_api_key_code": "awaiting_approval",
+        "no_api_key": "Acme is waiting for Metaphi AI to approve it for Kennet"})
+    assert cli.main(["login", "--json"]) == cli.AUTH
+    assert json.loads(capsys.readouterr().out)["reason"] == "awaiting_approval"
+    assert pick.calls[-1].request.headers["authorization"] == "Bearer tok"
+    pick.respond(json={"email": "alice@example.test", "org": "acme", "api_key": "mai_sk_live",
+                       "test_api_key": "mai_sk_test_t"})
+    assert cli.main(["login", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"email": "alice@example.test", "org": "acme", "keys": True,
+                                                   "next_step": "kennet twin <file> --test"}
+    cfg = config.load()
+    assert (cfg["token"], cfg["api_key"], cfg["test_api_key"]) == ("tok", "mai_sk_live", "mai_sk_test_t")
+    assert "no_api_key" not in cfg and "pending" not in cfg
+    # a sign-in that has ended, or a server that knows no pickup, falls through to the browser sign-in
+    pick.respond(401, json={"detail": "sign in"})
+    respx.post(f"{A}/device/code").respond(json=CODE)
+    assert cli.main(["login", "--no-browser", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "pending"
+    config.save({k: v for k, v in config.load().items() if k not in ("pending", "device_code")})
     # a resource that asks for no approval admits it at once: the sign-in is what is left
     made.respond(json={"id": "acme", "name": "Acme", "role": "owner", "admission": "admitted",
                        "message": "Acme is made and you own it. Run `kennet login` again for its keys."})

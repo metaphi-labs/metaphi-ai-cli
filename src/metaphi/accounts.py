@@ -117,16 +117,7 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
             if r.status_code == 200:
                 if not isinstance(body.get("access_token"), str):
                     raise Error("the sign-in server sent no access token")
-                cfg = config.load()
-                for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code"):
-                    cfg.pop(name, None)  # the server revoked the last login's keys
-                cfg.update({"token": body["access_token"], "email": body.get("email")})
-                if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
-                    cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
-                # why whoami and twin can say, later, what this sign-in was and was not given
-                cfg.update({k: body[k] for k in ("org", "no_api_key", "no_api_key_code")
-                            if isinstance(body.get(k), str) and body[k]})
-                config.save(cfg)
+                _keep(body, body["access_token"])
                 return body
             error = body.get("error")
             if error == "authorization_pending":
@@ -145,6 +136,36 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
         raise e
     _forget()
     raise need("the code expired; run `kennet login` again", "login_expired", "kennet login")
+
+
+def _keep(body: dict[str, Any], token: str) -> None:
+    """Save what the server handed this machine: the token, and the organization's keys or why none came."""
+    cfg = config.load()
+    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code"):
+        cfg.pop(name, None)  # the server revoked the keys it handed last
+    cfg.update({"token": token, "email": body.get("email")})
+    if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
+        cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
+    # why whoami and twin can say, later, what this sign-in was and was not given
+    cfg.update({k: body[k] for k in ("org", "no_api_key", "no_api_key_code")
+                if isinstance(body.get(k), str) and body[k]})
+    config.save(cfg)
+
+
+def pickup() -> dict[str, Any] | None:
+    """A machine that is signed in asks for its organization's keys again, by the token it holds: what a sign-in
+    hands over, with no browser. The organization was made, or approved, after the sign-in, and its keys come
+    here. None when this machine is not signed in or its sign-in has ended: then the person signs in."""
+    token = config.load().get("token")
+    if not token:
+        return None
+    with _http() as h:
+        r = h.post("/keys/cli", headers={"authorization": f"Bearer {token}"})
+    if r.status_code != 200:
+        return None
+    body = _json(r)
+    _keep(body, token)
+    return body
 
 
 def _forget() -> None:

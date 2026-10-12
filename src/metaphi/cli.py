@@ -45,14 +45,6 @@ class _OnArgv(argparse.Action):
         setattr(ns, self.dest, value)
 
 
-class _DebugKeyring(argparse.Action):
-    """Say where secrets would be kept, and stop: the release proves a real keychain backend loads in the binary."""
-
-    def __call__(self, p: argparse.ArgumentParser, ns: argparse.Namespace, value: object, opt: str | None = None):
-        print(config.keyring_backend())
-        p.exit()
-
-
 def _read_key() -> str:
     """An organization key from stdin when it is piped, else from a prompt that does not echo."""
     if sys.stdin is not None and not sys.stdin.isatty():
@@ -72,26 +64,23 @@ def _progress(a: argparse.Namespace):
 
 def _signed_in(a: argparse.Namespace, got: dict) -> None:
     cfg = config.load()
-    console = f"{config.accounts_url()}/console"
     if cfg.get("test_api_key"):
-        _out(a, {"email": got.get("email"), "org": got.get("org"), "keys": True, "console": console,
+        _out(a, {"email": got.get("email"), "org": got.get("org"), "keys": True,
                  "next_step": "kennet twin <file> --test"},
              f"Signed in as {got.get('email')}.",
              f"Ready for {got.get('org')}: its live key and test key are saved on this machine.",
              "Next: kennet twin <file>   (--test for a free test run)",
-             "" if skill.installed() else "Working through Claude Code? `kennet skill install` teaches it this CLI.",
-             f"Usage, keys, members and billing: {console}")
+             "" if skill.installed() else "Working through Claude Code? `kennet skill install` teaches it this CLI.")
         return
     # signed in, and handed no key: the same refusal `whoami` and `twin` make, with nothing here left to run
     why = got.get("no_api_key") or "the server sent none"
     if not a.json:
         print("\n".join((f"Signed in as {got.get('email')}.", f"No key was saved: {why}.",
-                         "Signing in again changes nothing until that does; then `kennet login` hands the keys over.",
-                         f"Usage, keys, members and billing: {console}")))
+                         "`kennet login` picks the keys up once that changes, with no second sign-in.")))
     from metaphi.twin import no_key
     e = no_key({"no_api_key": why, "email": got.get("email"), "no_api_key_code": got.get("no_api_key_code")},
                again=False)
-    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False, "console": console,
+    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False,
                  "reason": got.get("no_api_key_code")}
     raise e
 
@@ -107,6 +96,10 @@ def cmd_login(a: argparse.Namespace) -> None:
         _out(a, {"keys": True}, "key saved on this machine")
         return
     say = _progress(a)
+    if accounts.pending() is None and (got := accounts.pickup()) is not None:
+        # signed in already: the keys come by the token this machine holds, and nobody opens a browser
+        _signed_in(a, got)
+        return
     if a.complete:
         held = accounts.pending()
         if held is not None:
@@ -172,8 +165,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                               **({"credits_usd": credit[o["id"]]["credits_usd"],
                                   "can_buy": bool(credit[o["id"]].get("can_buy"))} if o["id"] in credit else {})}
                              for o in orgs],
-           "key": live, "test_key": test,
-           "console": f"{config.accounts_url()}/console"}
+           "key": live, "test_key": test}
     lines = [f"person: {got['email'] or 'not signed in (a saved key only)'}"]
     if got["org"] and got["org"] not in [o["id"] for o in got["organizations"]]:
         lines.append(f"org:    {got['org']}")
@@ -325,9 +317,9 @@ def cmd_org_create(a: argparse.Namespace) -> None:
     made = accounts.create_org(a.name)
     ready = made.get("admission") == "admitted"
     _out(a, {"id": made["id"], "name": made.get("name"), "role": made.get("role"),
-             "admission": made.get("admission"), "next_step": "kennet login" if ready else None},
+             "admission": made.get("admission"), "next_step": "kennet login"},
          str(made.get("message") or f"{made['id']} is made and you own it."),
-         "Next: kennet login" if ready else "")
+         "Next: kennet login" + ("" if ready else "   (once it is approved; it says so until then)"))
 
 
 def cmd_credits(a: argparse.Namespace) -> None:
@@ -388,7 +380,6 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kennet", description="Kennet, Metaphi AI's RL infrastructure, from the command line.", epilog=EXAMPLES,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"kennet {__version__}")
-    p.add_argument("--debug-keyring", nargs=0, action=_DebugKeyring, help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="command", metavar="<command>")
 
     s = sub.add_parser("login", help="sign in through the browser and save your organization's keys (or save a key "

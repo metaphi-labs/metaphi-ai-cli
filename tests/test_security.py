@@ -3,6 +3,7 @@ import io
 import json
 import os
 import stat
+from pathlib import Path
 
 import httpx
 import pytest
@@ -16,7 +17,6 @@ A = config.DEFAULT_ACCOUNTS
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("METAPHI_HOME", str(tmp_path / "cfg"))
-    monkeypatch.setenv("METAPHI_NO_KEYRING", "1")
     for var in ("METAPHI_API_KEY", "METAPHI_ACCOUNTS", "METAPHI_API", "METAPHI_ALLOW_CUSTOM_HOST"):
         monkeypatch.delenv(var, raising=False)
     config._warned.clear()
@@ -179,54 +179,13 @@ def test_a_corrupt_file_is_an_error_not_an_empty_sign_in(home, text, capsys):
     assert cli.main(["whoami"]) == 1 and "config.json" in capsys.readouterr().err
 
 
-class FakeKeyring:
-    priority = 5
-
-    def __init__(self):
-        self.store = {}
-
-    def get_password(self, service, name):
-        return self.store.get((service, name))
-
-    def set_password(self, service, name, value):
-        self.store[(service, name)] = value
-
-    def delete_password(self, service, name):
-        del self.store[(service, name)]
-
-
-def test_secrets_go_to_the_keychain_and_the_file_keeps_the_rest(home, monkeypatch):
-    kr = FakeKeyring()
-    monkeypatch.setattr(config, "_keyring", lambda: kr)
+def test_everything_is_in_the_config_file_and_no_keychain_is_asked(home):
+    """An OS keychain asks a person to allow each new build, and an agent waits on that prompt forever."""
     config.save({"token": "tok", "api_key": "mai_sk_k", "test_api_key": "mai_sk_test_k", "email": "alice@example.test"})
-    assert json.loads(config.path().read_text()) == {"email": "alice@example.test"}
-    assert kr.store == {("metaphi-ai", "token"): "tok", ("metaphi-ai", "api_key"): "mai_sk_k",
-                        ("metaphi-ai", "test_api_key"): "mai_sk_test_k"}
-    assert config.load() == {"email": "alice@example.test", "token": "tok", "api_key": "mai_sk_k",
-                             "test_api_key": "mai_sk_test_k"}
-    cfg = config.load()
-    cfg.pop("token")
-    config.save(cfg)
-    assert ("metaphi-ai", "token") not in kr.store
-
-
-def test_a_secret_already_in_the_file_moves_to_the_keychain_on_the_next_save(home, monkeypatch):
-    config.save({"api_key": "mai_sk_old"})
-    kr = FakeKeyring()
-    monkeypatch.setattr(config, "_keyring", lambda: kr)
-    config.save(config.load())
-    assert "api_key" not in json.loads(config.path().read_text())
-    assert kr.store[("metaphi-ai", "api_key")] == "mai_sk_old"
-
-
-def test_a_refusing_keychain_falls_back_to_the_file(home, monkeypatch):
-    class Refuses(FakeKeyring):
-        def set_password(self, *a):
-            raise RuntimeError("locked")
-
-    monkeypatch.setattr(config, "_keyring", lambda: Refuses())
-    config.save({"token": "tok"})
-    assert json.loads(config.path().read_text()) == {"token": "tok"}
+    assert json.loads(config.path().read_text()) == {"token": "tok", "api_key": "mai_sk_k",
+                                                     "test_api_key": "mai_sk_test_k", "email": "alice@example.test"}
+    assert config.path().stat().st_mode & 0o777 == 0o600 and config.load()["token"] == "tok"
+    assert "keyring" not in Path(config.__file__).read_text()
 
 
 # Taking a key
@@ -262,9 +221,3 @@ def test_a_key_on_argv_still_works_but_warns(home, capsys):
     with pytest.raises(SystemExit):
         cli.parser().parse_args(["twin", "--help"])
     assert "deprecated" in capsys.readouterr().out
-
-
-def test_debug_keyring_says_where_secrets_go(capsys):
-    with pytest.raises(SystemExit) as e:
-        cli.main(["--debug-keyring"])
-    assert e.value.code == 0 and capsys.readouterr().out.startswith("file: ")

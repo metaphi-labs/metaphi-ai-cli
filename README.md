@@ -25,15 +25,12 @@ Working through Claude Code? `kennet skill install`, then ask it to twin the fil
 [Driving it from an agent](#driving-it-from-an-agent).
 
 `kennet login` signs you in as yourself and hands this machine your organization's keys: a live key (`mai_sk_...`)
-and a test key (`mai_sk_test_...`). They are kept in the OS keychain when there is one (macOS Keychain, Windows
-Credential Locker, Secret Service on Linux), otherwise in the config file, and are never printed. Logging in again
+and a test key (`mai_sk_test_...`). They are kept in the config file (`~/.config/metaphi/config.json`, mode 600) and are never printed. No OS keychain is used: it prompts a person, and an agent cannot answer. Logging in again
 replaces them; `kennet logout` revokes them. If your organization has no twinning access yet, the sign-in still
 works and says why no key was saved.
 
 `kennet twin trace.json --test` runs on the test key. Test runs go through the same pipeline but cost nothing; files
 can be at most 2 MiB and an organization gets one test run in all, so use it on a representative file. Test twins and live twins never see each other.
-
-Usage, keys, members and billing are in the console at <https://app.metaphi.ai/console>; the work is done here.
 
 ## Driving it from an agent
 
@@ -190,7 +187,7 @@ what each may do, the prepaid balance when you may see it, and which key calls r
 `METAPHI_API_KEY`), by its last four characters. It asks the twin service whether each key works, and exits 0 only
 when the one in use does.
 If you are in no organization, make yours: `kennet org create "Acme Robotics"`. You own it. During the private beta
-Metaphi AI approves each new organization; you are mailed when yours is, and `kennet login` then saves its keys.
+Metaphi AI approves each new organization; you are mailed when yours is, and `kennet login` then saves its keys, with no second sign-in.
 `kennet whoami` says so while it waits.
 
 A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
@@ -246,7 +243,6 @@ sent one.
 | `METAPHI_API` | `https://api.metaphi.ai/v1/kennet`, the Kennet API |
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
 | `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `kennet twin` waits for its twin to end (`--timeout` per call) |
-| `METAPHI_NO_KEYRING` | unset: secrets go to the OS keychain when one is available; `1` keeps them in the config file |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
 
 Sign out with `kennet logout`. It ends this sign-in everywhere it is used, revokes the keys `kennet login`
