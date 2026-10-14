@@ -1,0 +1,133 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Exact pins, always the latest: every bump a CI-tested PR. Minors, patches and digests land weekly as one PR merged on green CI; each major is its own PR the week it ships, merged by a person.",
+  "extends": ["config:best-practices", ":semanticCommitsDisabled"],
+  "timezone": "America/Los_Angeles",
+  "rangeStrategy": "pin",
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 20,
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": null,
+    "schedule": ["at any time"],
+    "labels": ["security"]
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["* 0-5 * * 1"],
+    "automerge": true
+  },
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "packageRules": [
+    {
+      "description": "Minors, patches and digests: one PR per repo each Monday, merged once CI is green.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
+      "groupName": "non-major",
+      "groupSlug": "non-major",
+      "schedule": ["* 0-5 * * 1"]
+    },
+    {
+      "description": "GitHub Actions in one PR per repo (majors in a second one), so a runner bump costs one CI run, not one per action.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "groupSlug": "github-actions"
+    },
+    {
+      "description": "Merged by Renovate on green CI: everything but a major.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest", "pin"],
+      "automerge": true
+    },
+    {
+      "description": "Majors: their own PR as soon as they clear the release age (the GitHub Actions ones share one), listed on the Dependency Dashboard and merged by a person.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["major"]
+    },
+    {
+      "description": "Cargo: Cargo.lock is the exact pin; Cargo.toml requirements move to the latest release with it.",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "requires-python is the interpreter range a project supports, not a pin; the interpreter moves with the images and CI that run it.",
+      "matchDepTypes": ["requires-python"],
+      "enabled": false
+    },
+    {
+      "description": "The interpreter a CI matrix names is the support range it proves, moved with the images that run the code, not alone.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "enabled": false
+    },
+    {
+      "description": "A new Python interpreter in an image is its own PR, merged by a person, even when the tag calls it a minor.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python", "/(^|/)python$/"],
+      "matchUpdateTypes": ["minor"],
+      "groupName": "python image",
+      "groupSlug": "python-image",
+      "automerge": false,
+      "labels": ["major"]
+    },
+    {
+      "description": "A package published to PyPI: its own requirements move to the latest release as floors, not exact pins, so a consumer can still resolve beside it; uv.lock and the dev and CI pins stay exact.",
+      "matchManagers": ["pep621"],
+      "matchDepTypes": ["project.dependencies", "project.optional-dependencies"],
+      "rangeStrategy": "bump"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "PyPI pins written as strings in Python: image pip_install(...) lists and pin tables. Same depName as the pyproject entry, so both move in one PR.",
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.py$/"],
+      "matchStrings": [
+        "[\"'](?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]\"']*\\])?==(?<currentValue>[0-9][^\"'\\s;,]*)[\"']"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "description": "npm pins written as name@version strings in Python (agent installs in images).",
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.py$/"],
+      "matchStrings": [
+        "[\"'](?<depName>@?[a-z0-9][a-z0-9._-]*(?:/[a-z0-9._-]+)?)@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+[^\"'\\s]*)[\"']"
+      ],
+      "datasourceTemplate": "npm"
+    },
+    {
+      "description": "Images pulled in Python: Image.from_registry(\"name:tag[@digest]\").",
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.py$/"],
+      "matchStrings": [
+        "from_registry\\(\\s*[\"'](?<depName>[a-z0-9][a-z0-9./_-]*):(?<currentValue>[A-Za-z0-9][A-Za-z0-9._-]*)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?[\"']"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "pip pins in Dockerfile RUN lines.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)([^/]*\\.)?Dockerfile(\\.[^/]*)?$/"],
+      "matchStrings": [
+        "(?:^|[\\s\"'])(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]\\s]*\\])?==(?<currentValue>[0-9][^\\s\"';\\\\]*)"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "description": "A constant under a `# renovate: datasource=… depName=…` comment, in Python, shell or TOML.",
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.(py|sh|toml)$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(?:\\s+packageName=(?<packageName>\\S+))?(?:\\s+versioning=(?<versioning>\\S+))?\\s*\\n[^\\n]*?=\\s*[\"'](?<currentValue>[^\"'\\s]+)[\"']"
+      ]
+    }
+  ],
+  "poetry": {
+    "enabled": false
+  }
+}
