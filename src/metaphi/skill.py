@@ -15,7 +15,7 @@ MARK = "<!-- written by `kennet skill install`; edits are overwritten -->"
 
 STUB = f"""---
 name: {NAME}
-description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds. Use when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
+description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds. Use when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
 ---
 {MARK}
 
@@ -35,6 +35,7 @@ GUIDE = f"""# Kennet from the command line (kennet {__version__})
 
 Kennet is Metaphi AI's RL infrastructure. Through this CLI it offers synthetic twinning (steps 3 to 5) and the
 task sets your organization holds, its deliveries (step 6). Steps 1 and 2, the sign-in, are the same for both.
+Authoring and checking tasks is step 7.
 
 `kennet twin <file>` uploads one trace file (JSON, JSON Lines or text) to Metaphi AI's service and writes its
 synthetic twin beside it: the same file, same structure, with every real person, private organization, account
@@ -249,6 +250,37 @@ browser), `directory_in_use` (the directory holds another delivery; `next_step` 
 `not_a_delivery` (`verify` was pointed at a directory with no lock it can read), `invalid_delivery` (the id is
 not `<name>@<version>`), `no_container_client` (nothing to sign in; use `kennet registry token`),
 `registry_login_failed` (the client refused; its reason is in the message), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
+
+## 7. Author and check tasks
+
+Authoring runs through Kennet's MCP tools, not this CLI. Connect them once, then sign in from `/mcp`:
+
+```sh
+claude mcp add --transport http kennet https://kennet.metaphi.ai/mcp/
+```
+
+The loop: write a Harbor bundle, check it (`run_task_ci_checks`), run models on it (`run_harbor_tasks`), read
+the rollouts (`harbor_runs`, `harbor_run_report`, `harbor_rollouts`), fix, repeat. Long calls return a task:
+poll `get_task`.
+
+- A bundle is named by `repo` (owner/name), `ref` and the path to its `task.toml` directory. Kennet reads
+  GitHub, never the local checkout: commit and push the ref first. The call needs push on the repository.
+- The bundle is a Harbor task: `task.toml`, `instruction.md`, `environment/`, `solution/`, `tests/`. Nothing
+  else at its root except `wrong/` and `right/`.
+- Wrong solutions (must score below 1.0) go in `wrong/`, right ones (must score 1.0) in `right/`, each a
+  `.patch` or a directory laid over the working directory. They sit in the problem directory, never under
+  `tests/`: beside the bundle when it is `<problem>/harbor/`, else at the bundle's root. At least one wrong
+  solution is needed for `eval_ready`.
+- A GPU task names one type: `gpus` and `gpu_types = ["L40S"]` under `[environment]`.
+- CI: `eval_ready` true is the verdict. Otherwise `gate.blocking_checks` names what refused, and each finding
+  says the fix; `gate.advisory_failed` is advice. Fix the bundle, push, run again.
+- Rollouts: `mode` `conduct`, `models`, `harness` and `reasoning_effort` (required; Kennet has no default),
+  `k` trials. The models you may run are the `models` field's enum. A refused call says what it needs: tell
+  the user, never swap in another model or setting yourself.
+- A trial that failed for an infrastructure reason was not graded, whatever its reward reads: run it again,
+  and do not count it as the model's failure.
+- What no check settles, or a fault in Kennet itself: open an issue on the task's repository with the run id,
+  the finding and what was tried, and tell the user.
 """
 
 
