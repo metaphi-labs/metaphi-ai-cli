@@ -13,7 +13,7 @@ NAMESPACE = "kennet-release"
 
 # The release key: `ssh-keygen -t ed25519`, its private half only in the `pypi` environment's RELEASE_SIGNING_KEY.
 # install.sh carries the same line. Empty: nothing verifies, so nothing is installed or swapped (fail closed).
-PUBLIC_KEY = ""
+PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGM4JSNzis6zZVswYoxPTh6MnN4TfZnwY8PWFIbaj+JO kennet-release"
 
 
 class BadSignature(Exception):

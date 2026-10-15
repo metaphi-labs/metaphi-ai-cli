@@ -4,6 +4,7 @@ mismatched release. CI runs it on Linux and macOS."""
 import hashlib
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -36,8 +37,8 @@ def key(tmp_path):
 
 def _script(tmp_path: Path, key: Path) -> Path:
     """install.sh with the test's key in place of the release key."""
-    s = SCRIPT.read_text().replace('PUBLIC_KEY=""', f'PUBLIC_KEY="{(key.parent / "release.pub").read_text().strip()}"',
-                                   1)
+    s = re.sub(r'^PUBLIC_KEY="[^"\n]*"$', f'PUBLIC_KEY="{(key.parent / "release.pub").read_text().strip()}"',
+               SCRIPT.read_text(), count=1, flags=re.MULTILINE)
     out = tmp_path / "install.sh"
     out.write_text(s)
     return out

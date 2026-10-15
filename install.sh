@@ -13,7 +13,7 @@
 #   KENNET_RELEASE_URL   where the release's files are (default: the latest GitHub release)
 
 # The release key (src/metaphi/signature.py carries the same line). Empty: nothing verifies, nothing is installed.
-PUBLIC_KEY=""
+PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGM4JSNzis6zZVswYoxPTh6MnN4TfZnwY8PWFIbaj+JO kennet-release"
 
 main() {
   set -eu
