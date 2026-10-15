@@ -110,8 +110,9 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
   `no_api_key` again, tell the user the message as it is, and stop.
 - Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
 - `invitation`, when there, is an invitation waiting for the user: `kennet org join <org> --json` accepts it.
-- When the saved key is refused, `whoami` asks accounts why, as `kennet login` would on a signed-in machine: the
-  answer is the real reason (`removed`, `invitation_pending`, ...), and keys handed over then are saved.
+- When the saved key is refused, `whoami` reads why without changing any key: an invitation waiting is
+  `kennet org join <org>`; otherwise the message says whether the key was replaced by a sign-in elsewhere or the
+  user is in no organization, and `next_step` is `kennet login`, which says the rest.
 - Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists each organization the
   user is in, with their `role` and what it holds (`grants`), and `credits_usd`, the prepaid balance, when they may
   see it.

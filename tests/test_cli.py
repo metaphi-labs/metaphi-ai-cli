@@ -248,9 +248,8 @@ def test_whoami_does_not_call_a_key_fine_that_the_twin_service_refuses(capsys):
     assert got["key"] == {"source": "saved", "hint": "…abcd", "status": "auth_unavailable"}
     assert checked.call_count == 2   # each key once: a 30 s wait is not waited out
     checked.respond(401, json={"error": {"type": "auth_error", "code": "invalid_api_key", "message": "revoked"}})
-    pick = respx.post(f"{A}/keys/cli").respond(401, json={"detail": "sign in"})   # the sign-in has ended too
     assert cli.main(["whoami", "--json"]) == cli.AUTH
-    assert json.loads(capsys.readouterr().out)["error"]["next_step"] == "kennet login" and pick.call_count == 1
+    assert json.loads(capsys.readouterr().out)["error"]["next_step"] == "kennet login"
 
 
 @respx.mock
@@ -1054,37 +1053,36 @@ def test_a_removed_member_is_told_the_servers_sentence_and_who_can_add_them_back
 
 
 @respx.mock
-def test_whoami_asks_accounts_why_a_saved_key_is_refused(capsys):
+def test_whoami_says_why_a_saved_key_is_refused_from_reads_alone(capsys):
+    """A status command never changes a key: no POST, so no machine's keys are replaced."""
     config.save({"token": "tok", "email": "bob@acme.test", "org": "acme", "api_key": "mai_sk_live_abcd",
                  "test_api_key": "mai_sk_test_wxyz"})
-    respx.get(f"{A}/keys/orgs").respond(json=[])
+    orgs = respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "name": "Acme", "role": "member",
+                                                       "admission": "admitted", "grants": ["twin"]}])
     respx.get(f"{A}/credits/orgs").respond(json=[])
-    respx.get(f"{A}/keys/invitations").respond(json=[])
+    invitations = respx.get(f"{A}/keys/invitations").respond(json=[])
     respx.get(f"{API}/twins").respond(401, json={"error": {"type": "auth_error", "code": "invalid_api_key",
                                                            "message": "that key is unknown, revoked or mistyped"}})
-    pick = respx.post(f"{A}/keys/cli").respond(json=REMOVED)
+    posted = respx.post(url__regex=r".*").respond(500)
+    # in an organization: the key was replaced by a sign-in on another machine
     assert cli.main(["whoami"]) == cli.AUTH
     got = capsys.readouterr()
-    assert "mistyped" not in got.out + got.err and pick.call_count == 1
-    assert got.err.endswith("error: no key: an owner of Acme took you out of it (code: no_api_key)\n"
-                            "Next: ask an owner of acme to add you back\n")
-    # invited since: the invitation is the answer, never `org create`
-    pick.respond(json=INVITED)
+    assert "mistyped" not in got.out + got.err
+    assert got.err.endswith("error: this machine's key was replaced by a sign-in elsewhere; run `kennet login` "
+                            "(code: invalid_api_key)\nNext: kennet login\n")
+    # in none, and invited to none
+    orgs.respond(json=[])
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["message"] == ("this machine's key no longer works and you're not in an organization; run "
+                                "`kennet login` to see why")
+    assert error["next_step"] == "kennet login"
+    # invited: the invitation is the answer, never `org create`
+    invitations.respond(json=[{"org": "beta", "name": "Beta", "role": "member", "expires": 1_900_000_000}])
     assert cli.main(["whoami", "--json"]) == cli.AUTH
     seen = json.loads(capsys.readouterr().out)
-    assert seen["error"]["next_step"] == "kennet org join acme" and seen["invitation"]["org"] == "acme"
-    # the key was replaced by a sign-in elsewhere: the pickup hands new keys, and whoami says they work
-    respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
-    pick.respond(json={"email": "bob@acme.test", "org": "acme", "api_key": "mai_sk_live_new1",
-                       "test_api_key": "mai_sk_test_new2"})
-    config.save({**config.load(), "api_key": "mai_sk_live_abcd"})
-    respx.get(f"{API}/twins").mock(side_effect=[
-        httpx.Response(401, json={"error": {"type": "auth_error", "code": "invalid_api_key", "message": "x"}}),
-        httpx.Response(200, json={"object": "list", "data": []}), httpx.Response(200, json={"object": "list",
-                                                                                           "data": []}),
-        httpx.Response(200, json={"object": "list", "data": []})])
-    assert cli.main(["whoami", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["key"]["hint"] == "…new1"
+    assert seen["error"]["next_step"] == "kennet org join beta" and seen["invitation"]["org"] == "beta"
+    assert not posted.called and config.load()["api_key"] == "mai_sk_live_abcd"
 
 
 @respx.mock

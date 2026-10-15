@@ -271,8 +271,9 @@ it. During the private beta Metaphi AI approves each new organization; you are m
 `kennet login` then saves its keys, with no second sign-in. `kennet whoami` says so while it waits.
 
 If an owner or admin takes you out of your organization, its keys stop working and the CLI says so (`removed`):
-only an owner of it can add you back. When a saved key is refused, `kennet whoami` asks accounts why rather than
-guessing, and saves the keys it is handed when there are new ones.
+only an owner of it can add you back. When a saved key is refused, `kennet whoami` says why from what it may read, and
+changes no key: an invitation to accept, a key replaced by a sign-in elsewhere, or no organization at all; `kennet
+login` then says the rest.
 
 A sign-in the server has ended is an error, not a name read back from a file.
 

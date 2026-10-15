@@ -193,18 +193,17 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                 credit = {o["id"]: o for o in accounts.org_credits()}
         (live, refused), (test, _) = asked[0].result(), asked[1].result()
     gone = refused is not None and refused.code in ("invalid_api_key", "missing_api_key")
-    if cfg.get("token") and not env and gone and accounts.pickup() is not None:
-        # the saved key is refused: accounts says why (taken out of the organization, an invitation to accept),
-        # as `kennet login` asks it on a signed-in machine; keys it hands now are saved and asked again
-        cfg = config.load()
-        live, refused = _key_status(cfg.get("api_key"), "saved") if cfg.get("test_api_key") else (None, None)
-        test, _ = _key_status(cfg.get("test_api_key"), "saved")
-        gone = False
     invitation = _invitation(cfg) if cfg.get("token") and (live is None or refused is not None) else None
     if invitation is not None:
         cfg = {**cfg, "invitation": invitation}
         if gone:
             live, refused = None, None   # the key is spent for good; what clears it is the invitation
+    elif gone and cfg.get("token") and not env:
+        # the saved key is refused: why, from what the sign-in may read and nothing that changes a key (asking
+        # `POST /keys/cli` would replace the keys of every machine the person signed in on)
+        refused.message = ("this machine's key was replaced by a sign-in elsewhere; run `kennet login`" if orgs else
+                           "this machine's key no longer works and you're not in an organization; run "
+                           "`kennet login` to see why")
     got = {"email": cfg.get("email") if cfg.get("token") else None,
            "org": cfg.get("org") if cfg.get("token") else None,
            "organizations": [{"id": o["id"], "role": o.get("role"), "grants": o.get("grants") or [],
