@@ -192,7 +192,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
         print("\n".join(lines))
     from metaphi.twin import no_key
     error = refused or no_key(cfg)
-    error.context = got
+    error.context = {**error.context, **got}
     raise error
 
 
@@ -488,10 +488,11 @@ def cmd_org_members_set(a: argparse.Namespace) -> None:
     got = _stepped_up(a, lambda: accounts.set_member(o["id"], email, a.role))
     members, _ = _members(got)
     result = {"org": o["id"], "email": email, "role": a.role}
-    if isinstance(got.get("link"), str):   # off the organization's domains: the person accepts, as that address
-        _out(a, {**result, "status": "invited", "link": got["link"], "invitation": got.get("id"), "members": members},
-             f"{email} is invited to {o['id']} as {a.role}; they join by opening this link, signed in as {email}:",
-             f"  {got['link']}")
+    invited = got.get("invited") if isinstance(got.get("invited"), dict) else {}
+    if email in invited and email not in (got.get("members") or {}):
+        # off the organization's domains: the server mails an invitation, accepted signed in as that address
+        _out(a, {**result, "status": "invited", "invitation": got.get("id"), "members": members},
+             f"invitation mailed to {email}; they accept it signed in as that address")
         return
     _out(a, {**result, "status": "member", "members": members}, f"{email} is {a.role} of {o['id']}")
 

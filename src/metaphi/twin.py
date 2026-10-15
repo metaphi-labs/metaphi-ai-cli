@@ -179,6 +179,11 @@ def _key(api_key: str | None, test: bool) -> str:
     return key
 
 
+# Why a sign-in was handed no key (`no_api_key_code`): accounts' reasons, and `no_keys_yet`, the CLI's own after
+# `kennet org create` when the organization is admitted at once. `kennet skill show` explains each.
+REASONS = ("no_organization", "awaiting_approval", "no_access", "service_account", "no_keys_yet")
+
+
 def no_key(cfg: dict[str, Any], again: bool = True) -> accounts.Error:
     """Signed in, and no key came with the sign-in. `kennet login` picks the keys up once the organization has
     access, by the token this machine holds and with no browser; `again` is False where that was just run. A
@@ -186,8 +191,10 @@ def no_key(cfg: dict[str, Any], again: bool = True) -> accounts.Error:
     why = cfg.get("no_api_key") or "your organization has no key for this machine yet"
     reason = cfg.get("no_api_key_code")
     step = {"no_organization": "kennet org create <name>"}.get(reason, "kennet login" if again else None)
-    return accounts.need(f"no key: {why}. Signed in as {cfg.get('email')}; `kennet login` picks the keys up once "
-                         "that changes, or set METAPHI_API_KEY", "no_api_key", step)
+    e = accounts.need(f"no key: {why}. Signed in as {cfg.get('email')}; `kennet login` picks the keys up once "
+                      "that changes, or set METAPHI_API_KEY", "no_api_key", step)
+    e.context = {"reason": reason}   # `no_api_key_code`, one of REASONS: what the skill's table acts on
+    return e
 
 
 def check(key: str, sleep: Callable[[float], None] = time.sleep) -> errors.MetaphiError | None:

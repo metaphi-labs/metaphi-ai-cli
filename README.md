@@ -5,14 +5,22 @@ The command line for Kennet, Metaphi AI's RL infrastructure. Sign in and twin ag
 ## Install
 
 ```sh
-brew install metaphi-labs/tap/kennet    # macOS and Linux
+curl -fsSL https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest/download/install.sh | sh
 ```
 
-No Homebrew? Download the binary for your platform from the
-[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), unpack it and put `kennet` on your
-`PATH`. Each release lists its `checksums.txt`.
+macOS and Linux, x86_64 and arm64, no root. It checks the latest release's binary against its `checksums.txt`,
+puts it in `~/.local/bin` (or `$KENNET_INSTALL_DIR`), says the line to add if that is not on your `PATH`, and
+installs the Claude Code skill when Claude Code is there. Run it again to upgrade; the binary also keeps itself
+current (below).
 
-Calling it from Python instead: `pip install metaphi-ai` gives you the same command and the library (see below).
+```sh
+brew install metaphi-labs/tap/kennet    # Homebrew, macOS and Linux
+pip install metaphi-ai                  # Python 3.10+, with the library
+```
+
+Or download the binary for your platform from the
+[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest) and check it against `checksums.txt`.
+
 
 ### Staying current
 
@@ -24,7 +32,7 @@ how this copy was installed:
 | --- | --- |
 | Homebrew | `brew upgrade metaphi-labs/tap/kennet` |
 | `pip`, `pipx`, `uv tool` | `pip install -U metaphi-ai`, `pipx upgrade metaphi-ai`, `uv tool upgrade metaphi-ai` |
-| the release binary | nothing: it updates itself (below), or `kennet update` now |
+| `install.sh`, or the release binary | nothing: it updates itself (below), or `kennet update` now |
 
 The notice is never shown under `--json`, when stderr is not a terminal, in CI (`CI` set), or with
 `KENNET_NO_UPDATE_NOTIFIER=1`.
@@ -248,8 +256,8 @@ kennet org members role bob@acme.com admin      # change a member's role
 kennet org members remove bob@acme.com          # take them out, or take back their invitation
 ```
 
-An address on a domain your organization claims joins at once. Any other address is invited: `add` prints a link,
-which the person opens signed in as that address, within a week. Only an owner makes, changes or removes an owner,
+An address on a domain your organization claims joins at once. Any other address is mailed an invitation, which
+the person accepts signed in as that address, within a week. Only an owner makes, changes or removes an owner,
 and the organization always keeps one. A change needs a recent sign-in: when yours is too old, `kennet` offers a
 fresh one at a terminal and tries again; elsewhere it fails with `step_up_required` and `kennet login` signs in
 afresh. `--org <id>` picks the organization when you manage several.

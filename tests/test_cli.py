@@ -868,20 +868,36 @@ def test_org_members_add_role_and_remove_call_the_member_route_with_the_bearer(c
 
 
 @respx.mock
-def test_org_members_add_off_domain_prints_the_invitation_link(capsys):
+def test_org_members_add_off_domain_says_the_invitation_is_mailed_and_prints_no_link(capsys):
     config.save({"token": "tok"})
     respx.get(f"{A}/keys/orgs").respond(json=[ACME])
-    link = "https://app.metaphi.ai/invite/abc"
     respx.put(f"{A}/keys/orgs/acme/members/erin@gmail.test").respond(
-        json={"members": ACME["members"], "invited": {"erin@gmail.test": "admin"}, "invitations": [], "link": link,
-              "id": "inv_2"})
+        json={"members": ACME["members"], "invited": {"erin@gmail.test": "admin"}, "id": "inv_2"})
     assert cli.main(["org", "members", "add", "erin@gmail.test", "--role", "admin"]) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "erin@gmail.test is invited to acme as admin; they join by opening this link, signed in as erin@gmail.test:",
-        f"  {link}"]
+    assert capsys.readouterr().out == "invitation mailed to erin@gmail.test; they accept it signed in as that address\n"
     assert cli.main(["org", "members", "add", "erin@gmail.test", "--role", "admin", "--json"]) == 0
     got = json.loads(capsys.readouterr().out)
-    assert (got["status"], got["link"], got["invitation"]) == ("invited", link, "inv_2")
+    assert (got["status"], got["invitation"], "link" in got) == ("invited", "inv_2", False)
+
+
+def test_the_skill_names_every_error_code_the_cli_says_or_acts_on():
+    """The codes are read from the source, so the guide and the code cannot drift apart."""
+    import re
+    from pathlib import Path
+
+    src = "".join(p.read_text() for p in Path(cli.__file__).parent.glob("*.py") if p.name != "skill.py")
+    codes = set(re.findall(r'code="([a-z_]+)"', src))
+    for call in re.findall(r'\bneed\(((?:[^()]|\([^()]*\))*)\)', src):   # accounts.need(message, code, next_step)
+        codes |= set(re.findall(r'"([a-z_]+)",\s*(?:"kennet[^"]*"|None|step)\s*$', call.strip()))
+    codes |= set(re.findall(r'"([a-z_]+)",\s*"kennet[^"]*"\)', src))   # any refusal (message, code, "kennet ...")
+    codes |= set(re.findall(r'code [!=]= "([a-z_]+)"', src))
+    for group in re.findall(r'code in \(([^)]*)\)', src):
+        codes |= set(re.findall(r'"([a-z_]+)"', group))
+    codes |= set(twin.REASONS)
+    codes |= {"unknown_or_expired", "sign_in_too_old"}   # what the approval page says; the CLI never sees them
+    assert {"step_up_required", "upgrade_required", "not_signed_in", "no_access", "service_account"} <= codes
+    missing = sorted(c for c in codes if f"`{c}`" not in skill.GUIDE)
+    assert not missing, f"kennet skill show does not explain: {missing}"
 
 
 @respx.mock

@@ -25,6 +25,24 @@ jobs:
           bad=$( (tar tzf dist/*.tar.gz; unzip -Z1 dist/*.whl) | grep -E '(^|/)(tests|\.github)/' || true)
           if [ -n "$bad" ]; then echo "::error::the distributions carry files that must not ship:"; echo "$bad"; exit 1; fi
 
+  install:
+    # install.sh against a release directory of its own: installs, upgrades, refuses a checksum mismatch
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - run: sh -n install.sh
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv run --frozen pytest -q tests/test_install.py
+
   binary:
     # The release's one-file build, on a PR: it must start.
     strategy:
