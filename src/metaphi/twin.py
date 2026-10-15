@@ -181,15 +181,32 @@ def _key(api_key: str | None, test: bool) -> str:
 
 # Why a sign-in was handed no key (`no_api_key_code`): accounts' reasons, and `no_keys_yet`, the CLI's own after
 # `kennet org create` when the organization is admitted at once. `kennet skill show` explains each.
-REASONS = ("no_organization", "awaiting_approval", "no_access", "service_account", "no_keys_yet")
+REASONS = ("no_organization", "awaiting_approval", "no_access", "service_account", "no_keys_yet",
+           "invitation_pending", "removed")
 
 
 def no_key(cfg: dict[str, Any], again: bool = True) -> accounts.Error:
     """Signed in, and no key came with the sign-in. `kennet login` picks the keys up once the organization has
     access, by the token this machine holds and with no browser; `again` is False where that was just run. A
-    person in no organization makes theirs first."""
-    why = cfg.get("no_api_key") or "your organization has no key for this machine yet"
+    person in no organization makes theirs first; one an organization has invited joins it (`kennet org join`),
+    and is never told to make one; one taken out of theirs is told who can add them back."""
+    why = str(cfg.get("no_api_key") or "your organization has no key for this machine yet").rstrip(".")
     reason = cfg.get("no_api_key_code")
+    invitation = accounts.invited(cfg)
+    if invitation is not None and reason in (None, "no_organization", "invitation_pending"):
+        # an invitation waits: joining is the one thing to do, whatever else the sign-in said
+        org = invitation["org"]
+        if reason != "invitation_pending":
+            why = f"{invitation.get('org_name') or org} has invited you to join it"
+        e = accounts.need(f"no key: {why}", "no_api_key", f"kennet org join {org}")
+        e.context = {"reason": "invitation_pending", "invitation": invitation}
+        return e
+    if reason == "removed":
+        org = cfg.get("org") or "your organization"
+        e = accounts.need(f"no key: {why}", "no_api_key", None)
+        e.advice = f"ask an owner of {org} to add you back"   # only they can: no command clears it
+        e.context = {"reason": reason}
+        return e
     step = {"no_organization": "kennet org create <name>"}.get(reason, "kennet login" if again else None)
     e = accounts.need(f"no key: {why}. Signed in as {cfg.get('email')}; `kennet login` picks the keys up once "
                       "that changes, or set METAPHI_API_KEY", "no_api_key", step)

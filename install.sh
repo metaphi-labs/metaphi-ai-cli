@@ -65,6 +65,7 @@ main() {
   ssh-keygen -Y verify -f "$tmp/allowed_signers" -I kennet-release -n kennet-release \
     -s "$tmp/checksums.txt.sig" < "$tmp/checksums.txt" >/dev/null 2>&1 ||
     fail "checksums.txt is not signed by Metaphi AI's release key; nothing was installed"
+  say "Signature verified (Metaphi AI release key)"
 
   line="$(grep "  kennet_[0-9][0-9.]*_$target\.tar\.gz\$" "$tmp/checksums.txt" | head -n 1 || true)"
   [ -n "$line" ] || fail "the release has no build for $target"

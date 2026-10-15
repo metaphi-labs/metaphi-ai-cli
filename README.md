@@ -101,6 +101,13 @@ kennet twins list --json      # the organization's twins, newest first
 
 Away from a terminal `kennet login` is `--no-wait` by itself: it prints the page and the code and returns, so the
 agent can show them to its person. `--wait` keeps the old behaviour, one call that waits for the approval.
+`--json` never opens a browser: it implies `--no-browser`, so a program's call never opens a tab on someone's
+screen.
+
+Whatever goes wrong ends in one line on stderr and a next step, never a traceback, and under `--json` in the error
+object. A request that never got an answer is `network` (`retryable`, exit 4): `error: can't reach
+app.metaphi.ai: the connection timed out`. Anything the CLI did not expect is `internal` (exit 1): one line,
+and the path of the debug log (`~/.config/metaphi/debug.log`) to report it with, beside `kennet --version`.
 
 A twin started is the service's, not the terminal's. Ctrl-C, a closed session or `--timeout` stop the waiting, never
 the twin, and say how to come back: `kennet twins wait <id>` (add `--test` for a test twin), from any machine
@@ -215,8 +222,11 @@ but for the last:
 | --- | --- | --- |
 | `not_signed_in` | no sign-in on this machine, or the server has ended it | `kennet login` |
 | `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
-| `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org create <name>` when you are in no organization; `null` while yours waits for approval, and from `login` itself; else `kennet login` |
+| `no_api_key` | signed in, but the sign-in was handed no key; the message says why, and `reason` which it is (below). Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org join <org>` when an organization has invited you (`invitation_pending`); `kennet org create <name>` when you are in no organization and none has; `null` when you were taken out of yours (`removed`: an owner of it adds you back), while yours waits for approval, and from `login` itself; else `kennet login` |
+| `no_invitation` | `kennet org join` found no open invitation from that organization: it expired or was taken back | `null` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
+| `network` (`api_error`) | no answer from a server at all: the message names the host and why (`retryable`, exit 4) | `null` |
+| `internal` (`api_error`) | something the CLI did not expect; `debug_log` beside the error is the file to report it with | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
 | `upgrade_required` (`upgrade_error`) | the service no longer serves this version (exit 5) | the upgrade command for this install |
 | `step_up_required` | a change to the organization's members needs a sign-in more recent than this one | `kennet login` (signs in afresh) |
@@ -249,9 +259,20 @@ version, shown as `newer` by `list`. You run the tasks with Harbor on your own m
 what each may do, the prepaid balance when you may see it, and which key calls run on (the saved one, or
 `METAPHI_API_KEY`), by its last four characters. It asks the twin service whether each key works, and exits 0 only
 when the one in use does.
-If you are in no organization, make yours: `kennet org create "Acme Robotics"`. You own it. During the private beta
-Metaphi AI approves each new organization; you are mailed when yours is, and `kennet login` then saves its keys, with no second sign-in.
-`kennet whoami` says so while it waits.
+If an organization has invited you, `kennet login` and `kennet whoami` say so (`invitation_pending`) and name the
+command that accepts it:
+
+```sh
+kennet org join acme          # or the invitation's id, inv_...; you join in the role it names, and its keys are saved
+```
+
+If you are in no organization and none has invited you, make yours: `kennet org create "Acme Robotics"`. You own
+it. During the private beta Metaphi AI approves each new organization; you are mailed when yours is, and
+`kennet login` then saves its keys, with no second sign-in. `kennet whoami` says so while it waits.
+
+If an owner or admin takes you out of your organization, its keys stop working and the CLI says so (`removed`):
+only an owner of it can add you back. When a saved key is refused, `kennet whoami` asks accounts why rather than
+guessing, and saves the keys it is handed when there are new ones.
 
 A sign-in the server has ended is an error, not a name read back from a file.
 

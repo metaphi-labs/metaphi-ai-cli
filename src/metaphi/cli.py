@@ -2,6 +2,7 @@
 
     kennet login                        sign in through the browser; your organization's keys come with it
     kennet org create "Acme"            make your organization, if you are in none; Metaphi AI approves it
+    kennet org join acme                accept the invitation an organization sent you; its keys come with it
     kennet org members                  its members; `add`, `role`, `remove` change them (owners and admins)
     kennet twin trace.json              twin a trace with that key
 
@@ -10,8 +11,10 @@ the result (or the error object) alone on stdout while progress goes to stderr, 
 clears names that command (`Next: ...`, `next_step` in JSON).
 
 Exit status: 0 done; 1 failed; 2 the command line was wrong; 3 a sign-in or a key is needed (`AUTH`); 4 the same
-call may work later (`LATER`: the service is unavailable, rate limited, or a wait ran out); 5 this version is too old
-for the service (`UPGRADE`: `upgrade_required`, and `next_step` is the upgrade command for this install).
+call may work later (`LATER`: the service is unavailable or unreachable, rate limited, or a wait ran out); 5 this
+version is too old for the service (`UPGRADE`: `upgrade_required`, and `next_step` is the upgrade command for this
+install). Whatever goes wrong ends in one line and a next step, never a traceback: a network that fails is `network`,
+and anything the CLI did not expect is `internal`, its traceback in the debug log the line names.
 """
 from __future__ import annotations
 
@@ -22,9 +25,12 @@ import json
 import os
 import sys
 import time
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import httpx
 
 from metaphi import __version__, accounts, config, errors, skill, update
 
@@ -66,30 +72,42 @@ def _progress(a: argparse.Namespace):
     return (lambda s: print(s, file=sys.stderr)) if getattr(a, "json", False) else print
 
 
-def _signed_in(a: argparse.Namespace, got: dict) -> None:
+def _invitation_line(i: dict) -> str:
+    return (f"{i.get('org_name') or i['org']} has invited you to join it"
+            + (f" as {i['role']}" if i.get("role") else "") + (f", until {_when(i['expires'])}" if i.get("expires")
+                                                               else "") + ".")
+
+
+def _signed_in(a: argparse.Namespace, got: dict, joined: dict | None = None) -> None:
     cfg = config.load()
+    said = f"You joined {joined['org']}" + (f" as {joined['role']}." if joined.get("role") else ".") if joined else ""
     if cfg.get("test_api_key"):
         _out(a, {"email": got.get("email"), "org": got.get("org"), "keys": True,
-                 "next_step": "kennet twin <file> --test"},
-             f"Signed in as {got.get('email')}.",
+                 **({"joined": joined} if joined else {}), "next_step": "kennet twin <file> --test"},
+             said, f"Signed in as {got.get('email')}.",
              f"Ready for {got.get('org')}: its live key and test key are saved on this machine.",
              "Next: kennet twin <file>   (--test for a free test run)",
              "" if skill.installed() else "Working through Claude Code? `kennet skill install` teaches it this CLI.")
         return
     # signed in, and handed no key: the same refusal `whoami` and `twin` make, with nothing here left to run
     why = got.get("no_api_key") or "the server sent none"
-    if not a.json:
-        print("\n".join((f"Signed in as {got.get('email')}.", f"No key was saved: {why}.",
-                         "`kennet login` picks the keys up once that changes, with no second sign-in.")))
     from metaphi.twin import no_key
-    e = no_key({"no_api_key": why, "email": got.get("email"), "no_api_key_code": got.get("no_api_key_code")},
-               again=False)
-    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False,
-                 "reason": got.get("no_api_key_code")}
+    e = no_key({**got, "no_api_key": why}, again=False)
+    reason = e.context.get("reason")
+    if not a.json:
+        lines = [said, f"Signed in as {got.get('email')}."]
+        if reason not in ("invitation_pending", "removed"):   # those the error says whole, with what clears it
+            lines += [f"No key was saved: {why}.",
+                      "`kennet login` picks the keys up once that changes, with no second sign-in."]
+        print("\n".join(x for x in lines if x))
+    e.context = {"email": got.get("email"), "org": got.get("org"), "keys": False, **e.context,
+                 **({"joined": joined} if joined else {})}
     raise e
 
 
 def cmd_login(a: argparse.Namespace) -> None:
+    if a.json:   # a caller reading JSON is a program: the page and the code are handed over, never a browser tab
+        a.no_browser = True
     key = a.api_key or (_read_key() if a.with_api_key else None)
     if a.with_api_key or a.api_key:
         if not key or not key.startswith(config.KEY_PREFIX):
@@ -146,6 +164,17 @@ def _key_status(key: str | None, source: str) -> tuple[dict | None, errors.Metap
     return {"source": source, "hint": _hint(key), "status": "ok" if e is None else e.code or "error"}, e
 
 
+def _invitation(cfg: dict) -> dict | None:
+    """The invitation waiting for the signed-in person: the one the last sign-in named, else one sent since."""
+    if (held := accounts.invited(cfg)) is not None:
+        return held
+    with contextlib.suppress(config.Error):
+        for i in accounts.call("GET", "/keys/invitations"):
+            if isinstance(i, dict) and (held := accounts.invited({"invitation": {"org_name": i.get("name"), **i}})):
+                return held
+    return None
+
+
 def cmd_whoami(a: argparse.Namespace) -> None:
     """Who the servers say this machine is, not what the config file remembers: accounts for the person and their
     organizations, the twin service for each key."""
@@ -163,6 +192,19 @@ def cmd_whoami(a: argparse.Namespace) -> None:
             with contextlib.suppress(config.Error):   # a member who is not shown the balance
                 credit = {o["id"]: o for o in accounts.org_credits()}
         (live, refused), (test, _) = asked[0].result(), asked[1].result()
+    gone = refused is not None and refused.code in ("invalid_api_key", "missing_api_key")
+    if cfg.get("token") and not env and gone and accounts.pickup() is not None:
+        # the saved key is refused: accounts says why (taken out of the organization, an invitation to accept),
+        # as `kennet login` asks it on a signed-in machine; keys it hands now are saved and asked again
+        cfg = config.load()
+        live, refused = _key_status(cfg.get("api_key"), "saved") if cfg.get("test_api_key") else (None, None)
+        test, _ = _key_status(cfg.get("test_api_key"), "saved")
+        gone = False
+    invitation = _invitation(cfg) if cfg.get("token") and (live is None or refused is not None) else None
+    if invitation is not None:
+        cfg = {**cfg, "invitation": invitation}
+        if gone:
+            live, refused = None, None   # the key is spent for good; what clears it is the invitation
     got = {"email": cfg.get("email") if cfg.get("token") else None,
            "org": cfg.get("org") if cfg.get("token") else None,
            "organizations": [{"id": o["id"], "role": o.get("role"), "grants": o.get("grants") or [],
@@ -170,7 +212,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                               **({"credits_usd": credit[o["id"]]["credits_usd"],
                                   "can_buy": bool(credit[o["id"]].get("can_buy"))} if o["id"] in credit else {})}
                              for o in orgs],
-           "key": live, "test_key": test}
+           "key": live, "test_key": test, **({"invitation": invitation} if invitation else {})}
     lines = [f"person: {got['email'] or 'not signed in (a saved key only)'}"]
     if got["org"] and got["org"] not in [o["id"] for o in got["organizations"]]:
         lines.append(f"org:    {got['org']}")
@@ -180,9 +222,12 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                      + ("waits for Metaphi AI to approve it" if waits else
                         f"holds {', '.join(o['grants']) or 'nothing yet'}")
                      + (f"; ${o['credits_usd']:,.2f} prepaid credit" if "credits_usd" in o else ""))
+    if invitation:
+        lines.append(f"invite: {_invitation_line(invitation)}")
     said = {"ok": "works"}
     lines.append(f"key:    {live['hint']} ({live['source']}): {said.get(live['status'], live['status'])}" if live else
-                 f"key:    none ({cfg.get('no_api_key') or 'run `kennet login`'})")
+                 "key:    none" + ("" if invitation or cfg.get("no_api_key_code") == "removed" else
+                                   f" ({cfg.get('no_api_key') or 'run `kennet login`'})"))
     if test:
         lines.append(f"test:   {test['hint']}: {said.get(test['status'], test['status'])}")
     if live and refused is None:
@@ -431,13 +476,26 @@ def _refill(e: errors.MetaphiError) -> bool:
     return _top_up(o)
 
 
+APPROVAL = "Metaphi AI approves new organizations; you're emailed when it's done, then run `kennet login`"
+
+
 def cmd_org_create(a: argparse.Namespace) -> None:
     made = accounts.create_org(a.name)
     ready = made.get("admission") == "admitted"
+    message = str(made.get("message") or (f"{made['id']} is made and you own it." if ready else APPROVAL))
+    # approved at once: `kennet login` saves the keys now. Waiting: nothing to run until the mail comes
     _out(a, {"id": made["id"], "name": made.get("name"), "role": made.get("role"),
-             "admission": made.get("admission"), "next_step": "kennet login"},
-         str(made.get("message") or f"{made['id']} is made and you own it."),
-         "Next: kennet login" + ("" if ready else "   (once it is approved; it says so until then)"))
+             "admission": made.get("admission"), "message": message, "next_step": "kennet login" if ready else None},
+         message, "Next: kennet login" if ready else "")
+
+
+def cmd_org_join(a: argparse.Namespace) -> None:
+    joined = _stepped_up(a, lambda: accounts.join(a.org))
+    got = accounts.pickup()
+    if got is None:   # joined, and the sign-in ended meanwhile: a fresh one hands the keys over
+        raise accounts.need(f"you joined {joined['org']}; your sign-in has ended, so its keys did not come",
+                            "not_signed_in", "kennet login")
+    _signed_in(a, got, joined)
 
 
 def _stepped_up(a: argparse.Namespace, change):
@@ -557,6 +615,7 @@ EXAMPLES = """\
 examples:
   kennet login                      sign in; your organization's keys are saved on this machine
   kennet org create "Acme"          make your organization, if you are in none; Metaphi AI approves it
+  kennet org join acme              accept the invitation an organization sent you; its keys come with it
   kennet org members                its members and open invitations (owners and admins)
   kennet org members add bob@acme.com --role admin   add a person; another domain gets an invitation link
   kennet whoami                     who you are, your organization, its balance, the key in use
@@ -573,7 +632,7 @@ examples:
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
   kennet skill install              teach Claude Code this CLI (once per machine)
   kennet skill show                 the guide an agent follows, for this version
-  kennet login --json               prints the page and the code, and returns
+  kennet login --json               prints the page and the code, and returns; never opens a browser
   kennet login --complete           waits for the approval, saves the keys
   METAPHI_API_KEY=mai_sk_... kennet twin trace.json --json    no sign-in: a key from the console
 
@@ -615,7 +674,8 @@ def parser() -> argparse.ArgumentParser:
     _json_flag(s)
     s.set_defaults(fn=cmd_whoami)
 
-    s = sub.add_parser("org", help="your organization: make it, if you are in none; manage its members")
+    s = sub.add_parser("org", help="your organization: make it, if you are in none, or join the one that invited "
+                       "you; manage its members")
     s.set_defaults(fn=lambda a, s=s: s.print_help())
     verbs = s.add_subparsers(dest="verb", metavar="<verb>")
     v = verbs.add_parser("create", help="make an organization and own it; Metaphi AI approves it for Kennet and "
@@ -623,6 +683,11 @@ def parser() -> argparse.ArgumentParser:
     v.add_argument("name", help="what it is called, e.g. \"Acme Robotics\"")
     _json_flag(v)
     v.set_defaults(fn=cmd_org_create)
+    v = verbs.add_parser("join", help="accept the invitation an organization sent you, and save its keys")
+    v.add_argument("org", help="the organization that invited you (`kennet whoami` names it), or the invitation's id "
+                   "(inv_...)")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_org_join)
     m = verbs.add_parser("members", help="its members and open invitations; add, change or remove one (owners and "
                          "admins)")
     m.add_argument("--org", help="the organization, when you manage several")
@@ -792,7 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run(p, a)
     finally:
         if notifier is not None:
-            notifier.done()
+            with contextlib.suppress(Exception):   # the notice is never the command's error
+                notifier.done()
 
 
 def _run(p: argparse.ArgumentParser, a: argparse.Namespace) -> int:
@@ -807,7 +873,7 @@ def _run(p: argparse.ArgumentParser, a: argparse.Namespace) -> int:
     except config.Error as e:
         # `error: <message> (code: <code>, request: <request id>)`; --json also puts the error object on stdout
         error = e if isinstance(e, errors.MetaphiError) else errors.MetaphiError(str(e))
-        advice = getattr(error, "advice", None)
+        advice = getattr(error, "advice", None)   # what clears it when no command does: said after `Next:`
         if error.code == "out_of_credit":  # where it is paid, and the command that pays it and waits
             error.action_url = _credit_url(error)
             error.next_step = None if advice else "kennet credits buy"
@@ -819,14 +885,60 @@ def _run(p: argparse.ArgumentParser, a: argparse.Namespace) -> int:
         if error.code == "out_of_credit":
             print(advice or f"Add credit: {error.action_url}  or run: kennet credits buy --amount <amount>",
                   file=sys.stderr)
-        elif error.next_step:
-            print(f"Next: {error.next_step}", file=sys.stderr)
+        elif error.next_step or advice:
+            print(f"Next: {error.next_step or advice}", file=sys.stderr)
         elif error.retry_after_s is not None:
             print(f"Try again in {error.retry_after_s:.0f}s.", file=sys.stderr)
         return status(error)
     except KeyboardInterrupt:
         return 130
+    except httpx.TransportError as e:   # the network, not the service: the same command may work in a moment
+        return _said(a, network(e), "Next: check your connection, then run the same command again.")
+    except Exception as e:  # noqa: BLE001 - whatever else: one line and the log, never a traceback
+        error = _bug(e)
+        return _said(a, error, f"This is a bug; please report it with `kennet --version` and the debug log: "
+                               f"{error.context['debug_log']}")
     return 0
+
+
+NETWORK = {httpx.ConnectTimeout: "the connection timed out", httpx.ReadTimeout: "it stopped answering",
+           httpx.WriteTimeout: "sending timed out", httpx.PoolTimeout: "too many connections at once",
+           httpx.ConnectError: "no connection", httpx.RemoteProtocolError: "the connection dropped",
+           httpx.ReadError: "the connection dropped", httpx.WriteError: "the connection dropped",
+           httpx.ProxyError: "the proxy refused it"}
+
+
+def network(e: httpx.TransportError) -> errors.MetaphiError:
+    """A request that never got an answer: `network`, retryable, naming the host it was for."""
+    try:
+        host = e.request.url.host
+    except RuntimeError:   # an error raised before its request was made
+        host = None
+    reason = next((said for kind, said in NETWORK.items() if isinstance(e, kind)), None) or type(e).__name__
+    return errors.APIError(f"can't reach {host or 'the service'}: {reason}", code="network", retryable=True)
+
+
+def _bug(e: BaseException) -> errors.MetaphiError:
+    """Something the CLI did not expect: its traceback in the debug log, one line here."""
+    path = config.home() / "debug.log"
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} kennet {__version__} {' '.join(sys.argv[1:])}\n"
+                    + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    error = errors.MetaphiError(f"kennet stopped on something it did not expect ({type(e).__name__})",
+                                code="internal", type="api_error")
+    error.context = {"debug_log": str(path)}
+    return error
+
+
+def _said(a: argparse.Namespace, error: errors.MetaphiError, then: str) -> int:
+    """An error caught at the top: the error object under --json, one line and the next thing to do on stderr."""
+    if getattr(a, "json", False):
+        print(json.dumps({"error": error.to_dict(), **error.context}, indent=2))
+    print(f"error: {error}", file=sys.stderr)
+    print(then, file=sys.stderr)
+    return status(error)
 
 
 if __name__ == "__main__":

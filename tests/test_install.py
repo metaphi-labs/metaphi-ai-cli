@@ -96,6 +96,7 @@ def test_install_puts_a_version_behind_a_symlink_and_says_the_path_line(tmp_path
     assert _run(exe) == "kennet 0.1.16\n"
     assert (versions.parent / "link").read_text() == f"{exe}\n"
     assert f"Installed kennet 0.1.16 to {exe}" in got.stdout
+    assert got.stdout.count("Signature verified (Metaphi AI release key)") == 1
     assert f'export PATH="{tmp_path / "bin"}:$PATH"' in got.stdout and ".zshrc" in got.stdout
     assert got.stdout.splitlines()[-1] == "Next: run `kennet login`"
     assert [p.name for p in exe.parent.iterdir()] == ["kennet"]
@@ -144,6 +145,7 @@ def test_an_unsigned_or_mismatched_release_is_refused_and_nothing_is_installed(t
         got = _install(tmp_path, key, release)
         expected = {"checksum": "does not match checksums.txt", "signature": "not signed by Metaphi AI"}[what]
     assert got.returncode == 1 and expected in got.stderr
+    assert ("Signature verified" in got.stdout) == (what == "checksum")   # said only of a signature that held
     assert not (tmp_path / "bin" / "kennet").exists()
 
 

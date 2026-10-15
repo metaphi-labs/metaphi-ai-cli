@@ -47,12 +47,17 @@ def _said(r: httpx.Response) -> str:
 
 
 def _code(r: httpx.Response) -> str | None:
-    """The code of a coded refusal ({"detail": {"code", "message"}}), else None."""
+    """The code of a coded refusal, at the top level ({"detail": "<sentence>", "code"}) or inside `detail`
+    ({"detail": {"code", "message"}}), else None."""
     try:
-        detail = r.json().get("detail")
-    except (ValueError, AttributeError):
+        body = r.json()
+    except ValueError:
         return None
-    return detail.get("code") if isinstance(detail, dict) and isinstance(detail.get("code"), str) else None
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail")
+    code = detail.get("code") if isinstance(detail, dict) else body.get("code")
+    return code if isinstance(code, str) and code else None
 
 
 def _json(r: httpx.Response) -> dict[str, Any]:
@@ -156,7 +161,8 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
 def _keep(body: dict[str, Any], token: str) -> None:
     """Save what the server handed this machine: the token, and the organization's keys or why none came."""
     cfg = config.load()
-    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "step_up"):
+    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "invitation",
+                 "step_up"):
         cfg.pop(name, None)  # the server revoked the keys it handed last; a fresh sign-in is the step-up
     cfg.update({"token": token, "email": body.get("email")})
     if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
@@ -164,7 +170,17 @@ def _keep(body: dict[str, Any], token: str) -> None:
     # why whoami and twin can say, later, what this sign-in was and was not given
     cfg.update({k: body[k] for k in ("org", "no_api_key", "no_api_key_code")
                 if isinstance(body.get(k), str) and body[k]})
+    if (invitation := invited(body)) is not None:   # `invitation_pending`: the organization `kennet org join` accepts
+        cfg["invitation"] = invitation
     config.save(cfg)
+
+
+def invited(body: dict[str, Any]) -> dict[str, Any] | None:
+    """The open invitation an answer carries ({id, org, org_name, role, expires}), when it carries one."""
+    held = body.get("invitation")
+    if not (isinstance(held, dict) and isinstance(held.get("org"), str) and held["org"]):
+        return None
+    return {k: held.get(k) for k in ("id", "org", "org_name", "role", "expires") if held.get(k) is not None}
 
 
 def pickup() -> dict[str, Any] | None:
@@ -203,7 +219,7 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
 def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
-    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "pending",
+    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "invitation", "pending",
                  "device_code", "step_up"):
         cfg.pop(name, None)
     config.save(cfg)
@@ -255,6 +271,38 @@ def create_org(name: str) -> dict[str, Any]:
     cfg["no_api_key_code"] = "no_keys_yet" if made.get("admission") == "admitted" else "awaiting_approval"
     config.save(cfg)
     return made
+
+
+def _invitation_org(target: str) -> str:
+    """The organization an invitation is from: `target` itself, or the one the invitation of that id (inv_...) is
+    from, as the last sign-in or accounts says."""
+    if not target.startswith("inv_"):
+        return target
+    held = config.load().get("invitation")
+    if isinstance(held, dict) and held.get("id") == target and held.get("org"):
+        return str(held["org"])
+    for i in call("GET", "/keys/invitations"):
+        if isinstance(i, dict) and i.get("id") == target and i.get("org"):
+            return str(i["org"])
+    raise Error(f"you have no open invitation {target}; `kennet whoami` shows the one you have",
+                code="no_invitation")
+
+
+def join(target: str) -> dict[str, Any]:
+    """Accept the invitation of the organization named (or of the invitation id given), as the signed-in person:
+    they join it in the role it named. The keys come after, by `pickup`."""
+    org_id = _invitation_org(target.strip())
+    try:
+        got = call("POST", f"/keys/invitations/{quote(org_id, safe='')}")
+    except Error as e:
+        if getattr(e, "status", None) != 404:
+            raise
+        e = Error(f"{e.message}; it may have expired or been taken back", code="no_invitation")
+        e.advice = f"ask an owner of {org_id} to invite you again"
+        raise e from None
+    if not isinstance(got, dict):
+        raise Error("the server sent no membership")
+    return {"org": str(got.get("org") or org_id), "role": got.get("role")}
 
 
 def managed(name: str | None) -> dict[str, Any]:

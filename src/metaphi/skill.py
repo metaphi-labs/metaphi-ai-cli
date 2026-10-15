@@ -36,7 +36,8 @@ GUIDE = f"""# Kennet from the command line (kennet {__version__})
 
 Kennet is Metaphi AI's RL infrastructure. Through this CLI it offers synthetic twinning (steps 3 to 5) and the
 task sets your organization holds, its deliveries (step 6). Steps 1 and 2, the sign-in, are the same for both.
-Managing the organization's members is step 7; authoring and checking tasks is step 8.
+Joining an organization that invited the user, and managing its members, is step 7; authoring and checking tasks
+is step 8.
 
 `kennet twin <file>` uploads one trace file (JSON, JSON Lines or text) to Metaphi AI's service and writes its
 synthetic twin beside it: the same file, same structure, with every real person, private organization, account
@@ -47,7 +48,8 @@ their data goes.
 ## Rules
 
 - Add `--json` to every command. stdout is then one JSON object: the result, or `{{"error": {{...}}}}`. Progress
-  is on stderr. Read stdout only: stderr repeats an error in words, for a person.
+  is on stderr. Read stdout only: stderr repeats an error in words, for a person. Under `--json` nothing opens a
+  browser: `kennet login --json` prints the page and the code for the user to open.
 - The exit status says what kind of end it was:
 
   | Exit | Meaning |
@@ -101,10 +103,15 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
   | `no_keys_yet` | The organization was just made or approved. | `kennet login --json` once. |
   | `no_access` | Their organization holds no access to this yet. | Tell the user to ask their Metaphi AI contact, then stop. |
   | `service_account` | The sign-in is a service account, not a person. | A service account's key is made in the console and set as `METAPHI_API_KEY`; a person signs in as themselves (step 2). |
+  | `invitation_pending` | An organization has invited the user and they have not accepted. `invitation` beside `error` names it (`org`, `org_name`, `role`, `expires`). | Ask the user whether to join it; on yes, run `error.next_step`, `kennet org join <org> --json` (step 7). Never make an organization while an invitation waits. |
+  | `removed` | An owner or admin took the user out of their organization. | Only an owner of that organization can add them back: tell the user so, with the message, and stop. `error.next_step` is null. |
 
   Any other `reason`, or none: run `kennet login --json` once (a signed-in machine opens no browser); if it ends in
   `no_api_key` again, tell the user the message as it is, and stop.
 - Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
+- `invitation`, when there, is an invitation waiting for the user: `kennet org join <org> --json` accepts it.
+- When the saved key is refused, `whoami` asks accounts why, as `kennet login` would on a signed-in machine: the
+  answer is the real reason (`removed`, `invitation_pending`, ...), and keys handed over then are saved.
 - Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists only those the user
   manages (owner or admin), with `credits_usd`, the prepaid balance, when they may see it; it is empty for a member.
 
@@ -114,9 +121,9 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
 kennet login --json
 ```
 
-It returns at once with `"status": "pending"`: nobody is signed in yet. It opens the sign-in page in this
-machine's browser when there is one (`--no-browser` only prints it). Tell the user, with the page and code exactly
-as printed:
+It returns at once with `"status": "pending"`: nobody is signed in yet. With `--json` it never opens a browser
+(at a terminal, without `--json`, it opens the page; `--no-browser` only prints it). Tell the user, with the page
+and code exactly as printed:
 
 - Open `verification_uri_complete` in any browser: this machine's, or another device's (a phone, a laptop) when
   this one has none, as over SSH or in a sandbox. The code ties the page to this terminal.
@@ -197,6 +204,8 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 
 | `error.code` | What to do |
 | --- | --- |
+| `network` | This machine could not reach the service (`retryable`; the message names the host and why). Nothing was changed. Wait a few seconds, run the same command once more, then tell the user to check their connection. |
+| `internal` | `kennet` stopped on something it did not expect: a bug. Do not retry in a loop. Tell the user, with `kennet --version` and the `debug_log` path beside `error`, so it can be reported. |
 | `upgrade_required` | This `kennet` is too old for the service. `next_step` is the upgrade command for how it was installed (`brew upgrade ...`, `pip install -U ...`, `kennet update`, or the install.sh line): ask the user, run it, then the same command again. |
 | `update_unreachable` | `kennet update` could not reach GitHub (`retryable`). Try once more later; nothing changed. |
 | `update_unsigned`, `update_mismatch`, `update_refused` | The download was not Metaphi AI's signed release, or went elsewhere; nothing was installed. Tell the user; do not retry or work around it. |
@@ -286,6 +295,17 @@ not `<name>@<version>`), `no_container_client` (nothing to sign in; use `kennet 
 `registry_login_failed` (the client refused; its reason is in the message), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 
 ## 7. Your organization's members
+
+An organization that invited the user (`reason` `invitation_pending`, or `invitation` in `whoami`) is joined with:
+
+```sh
+kennet org join acme --json        # or the invitation's id: kennet org join inv_... --json
+```
+
+It accepts the invitation, signed in as the address it was sent to, and saves the organization's keys:
+`{{"email", "org", "keys": true, "joined": {{"org", "role"}}, "next_step"}}`. Ask the user first: a person is in one
+organization. `error.code` `no_invitation`: there is no open invitation from it (expired or taken back); tell the
+user to ask an owner of it for a new one. `step_up_required`: as below. `no_api_key` after joining: step 1's table.
 
 Owners and admins manage who is in the organization. Ask the user before every change: whom, and in which role.
 
