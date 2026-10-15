@@ -2,6 +2,7 @@
 
     kennet login                        sign in through the browser; your organization's keys come with it
     kennet org create "Acme"            make your organization, if you are in none; Metaphi AI approves it
+    kennet org members                  its members; `add`, `role`, `remove` change them (owners and admins)
     kennet twin trace.json              twin a trace with that key
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
@@ -9,7 +10,8 @@ the result (or the error object) alone on stdout while progress goes to stderr, 
 clears names that command (`Next: ...`, `next_step` in JSON).
 
 Exit status: 0 done; 1 failed; 2 the command line was wrong; 3 a sign-in or a key is needed (`AUTH`); 4 the same
-call may work later (`LATER`: the service is unavailable, rate limited, or a wait ran out).
+call may work later (`LATER`: the service is unavailable, rate limited, or a wait ran out); 5 this version is too old
+for the service (`UPGRADE`: `upgrade_required`, and `next_step` is the upgrade command for this install).
 """
 from __future__ import annotations
 
@@ -24,13 +26,15 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from metaphi import __version__, accounts, config, errors, skill
+from metaphi import __version__, accounts, config, errors, skill, update
 
-FAILED, USAGE, AUTH, LATER = 1, 2, 3, 4
+FAILED, USAGE, AUTH, LATER, UPGRADE = 1, 2, 3, 4, 5
 
 
 def status(error: errors.MetaphiError) -> int:
     """The exit status an error ends the command with."""
+    if error.code == "upgrade_required":
+        return UPGRADE
     if error.type == "auth_error":
         return AUTH
     return LATER if error.retryable or error.type == "rate_limit_error" else FAILED
@@ -96,7 +100,8 @@ def cmd_login(a: argparse.Namespace) -> None:
         _out(a, {"keys": True}, "key saved on this machine")
         return
     say = _progress(a)
-    if accounts.pending() is None and (got := accounts.pickup()) is not None:
+    # a refusal for a sign-in too old to change an organization (`step_up_required`) asks for a fresh one, not a pickup
+    if accounts.pending() is None and not config.load().get("step_up") and (got := accounts.pickup()) is not None:
         # signed in already: the keys come by the token this machine holds, and nobody opens a browser
         _signed_in(a, got)
         return
@@ -187,7 +192,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
         print("\n".join(lines))
     from metaphi.twin import no_key
     error = refused or no_key(cfg)
-    error.context = got
+    error.context = {**error.context, **got}
     raise error
 
 
@@ -435,6 +440,80 @@ def cmd_org_create(a: argparse.Namespace) -> None:
          "Next: kennet login" + ("" if ready else "   (once it is approved; it says so until then)"))
 
 
+def _stepped_up(a: argparse.Namespace, change):
+    """A change to the organization; refused for a sign-in too old (`step_up_required`), a person at a terminal is
+    offered a fresh sign-in and the change is tried once more. Away from one, the refusal names `kennet login`."""
+    try:
+        return change()
+    except accounts.Error as e:
+        if e.code != "step_up_required" or a.json or not _interactive():
+            raise
+        try:
+            said = input(f"{e.message}\nSign in again now? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise e from None
+        if said not in ("", "y", "yes"):
+            raise
+        accounts.login()
+        return change()   # once: a second refusal is the error
+
+
+def _members(o: dict) -> tuple[list[dict], list[dict]]:
+    """An organization's members [{email, role}], owners first, and its open invitations [{id, email, role, expires}]."""
+    held = o.get("members") or {}
+    members = sorted(({"email": m, "role": r} for m, r in held.items()),
+                     key=lambda m: (accounts.ROLES.index(m["role"]) if m["role"] in accounts.ROLES else 9, m["email"]))
+    invitations = [{k: i.get(k) for k in ("id", "email", "role", "expires")} for i in o.get("invitations") or []]
+    return members, invitations
+
+
+def _member_lines(members: list[dict], invitations: list[dict]) -> list[str]:
+    width = max([len(m["email"]) for m in members + invitations] or [0])
+    return ([f"  {m['email']:<{width}}  {m['role']}" for m in members]
+            + [f"  {i['email']:<{width}}  {i['role']}  invited, until {_when(i.get('expires'))}" for i in invitations])
+
+
+def cmd_org_members(a: argparse.Namespace) -> None:
+    o = accounts.managed(a.org)
+    members, invitations = _members(o)
+    _out(a, {"org": o["id"], "role": o.get("role"), "members": members, "invitations": invitations},
+         f"{o['id']} (you: {o.get('role')})", *_member_lines(members, invitations))
+
+
+def cmd_org_members_set(a: argparse.Namespace) -> None:
+    """`add` and `role`: one PUT, which adds a person in the role or changes a member's."""
+    o = accounts.managed(a.org)
+    email = a.email.strip().lower()
+    try:
+        got = _stepped_up(a, lambda: accounts.set_member(o["id"], email, a.role))
+    except accounts.Error as e:
+        if getattr(e, "status", None) != 503:
+            raise
+        # the address is off the organization's domains and the invitation cannot be mailed from here
+        raise accounts.Error(f"the invitation to {email} could not be mailed; invite them on the keys page: "
+                             f"{config.accounts_url()}/keys", code="mail_unavailable") from None
+    members, _ = _members(got)
+    result = {"org": o["id"], "email": email, "role": a.role}
+    invited = got.get("invited") if isinstance(got.get("invited"), dict) else {}
+    if email in invited and email not in (got.get("members") or {}):
+        # off the organization's domains: the server mails an invitation, accepted signed in as that address
+        _out(a, {**result, "status": "invited", "invitation": got.get("id"), "members": members},
+             f"invitation mailed to {email}; they accept it signed in as that address")
+        return
+    _out(a, {**result, "status": "member", "members": members}, f"{email} is {a.role} of {o['id']}")
+
+
+def cmd_org_members_remove(a: argparse.Namespace) -> None:
+    o = accounts.managed(a.org)
+    email = a.email.strip().lower()
+    got = _stepped_up(a, lambda: accounts.remove_member(o["id"], email))
+    members, _ = _members(got)
+    uninvited = "invited" in got   # the address was invited, not a member: the invitation is taken back
+    _out(a, {"org": o["id"], "email": email, "status": "uninvited" if uninvited else "removed", "members": members},
+         f"{email}'s invitation to {o['id']} is taken back" if uninvited else f"{email} is no longer in {o['id']}")
+
+
 def cmd_credits(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     out = o["credits_usd"] <= 0
@@ -452,6 +531,17 @@ def cmd_credits_buy(a: argparse.Namespace) -> None:
     _buy(o, a.amount, open_browser=not a.no_browser)
 
 
+def cmd_update(a: argparse.Namespace) -> None:
+    got = update.now()
+    if got["updated"]:
+        said = f"kennet {got['latest']} is installed; it runs from the next command."
+    elif got.get("next_step"):
+        said = f"kennet {got['latest']} is out (you have {got['version']}). Upgrade: {got['next_step']}"
+    else:
+        said = f"kennet {got['version']} is the newest."
+    _out(a, got, said)
+
+
 def cmd_skill_install(a: argparse.Namespace) -> None:
     path = skill.install(a.project, a.force)
     _out(a, {"path": str(path), "next_step": "kennet skill show"},
@@ -467,6 +557,8 @@ EXAMPLES = """\
 examples:
   kennet login                      sign in; your organization's keys are saved on this machine
   kennet org create "Acme"          make your organization, if you are in none; Metaphi AI approves it
+  kennet org members                its members and open invitations (owners and admins)
+  kennet org members add bob@acme.com --role admin   add a person; another domain gets an invitation link
   kennet whoami                     who you are, your organization, its balance, the key in use
   kennet twin trace.json --test     a free test twin, written to trace.twin.json
   kennet twin trace.json --no-wait  start a twin and return its id
@@ -485,7 +577,7 @@ from an agent or a script (no terminal): add --json; stdout is then the result o
   kennet login --complete           waits for the approval, saves the keys
   METAPHI_API_KEY=mai_sk_... kennet twin trace.json --json    no sign-in: a key from the console
 
-exit status: 0 done, 1 failed, 2 usage, 3 sign-in or key needed, 4 try the same call later
+exit status: 0 done, 1 failed, 2 usage, 3 sign-in or key needed, 4 try the same call later, 5 upgrade kennet
 """
 
 
@@ -523,7 +615,7 @@ def parser() -> argparse.ArgumentParser:
     _json_flag(s)
     s.set_defaults(fn=cmd_whoami)
 
-    s = sub.add_parser("org", help="your organization: make it, if you are in none")
+    s = sub.add_parser("org", help="your organization: make it, if you are in none; manage its members")
     s.set_defaults(fn=lambda a, s=s: s.print_help())
     verbs = s.add_subparsers(dest="verb", metavar="<verb>")
     v = verbs.add_parser("create", help="make an organization and own it; Metaphi AI approves it for Kennet and "
@@ -531,6 +623,27 @@ def parser() -> argparse.ArgumentParser:
     v.add_argument("name", help="what it is called, e.g. \"Acme Robotics\"")
     _json_flag(v)
     v.set_defaults(fn=cmd_org_create)
+    m = verbs.add_parser("members", help="its members and open invitations; add, change or remove one (owners and "
+                         "admins)")
+    m.add_argument("--org", help="the organization, when you manage several")
+    _json_flag(m)
+    m.set_defaults(fn=cmd_org_members)
+    members = m.add_subparsers(dest="members_verb", metavar="<verb>")
+    v = members.add_parser("add", help="add a person; an address off your organization's domains is sent an "
+                           "invitation link instead")
+    v.add_argument("email")
+    v.add_argument("--role", choices=accounts.ROLES, default="member", help="default member")
+    v.set_defaults(fn=cmd_org_members_set)
+    r = members.add_parser("role", help="change a member's role (only an owner makes or changes an owner)")
+    r.add_argument("email")
+    r.add_argument("role", choices=accounts.ROLES)
+    r.set_defaults(fn=cmd_org_members_set)
+    d = members.add_parser("remove", help="take a member out, or take back an invitation; the keys they made stay")
+    d.add_argument("email")
+    d.set_defaults(fn=cmd_org_members_remove)
+    for verb in (v, r, d):
+        verb.add_argument("--org", help="the organization, when you manage several")
+        _json_flag(verb)
 
     s = sub.add_parser("credits", help="your organization's prepaid balance")
     s.add_argument("--org")
@@ -651,6 +764,11 @@ def parser() -> argparse.ArgumentParser:
     _json_flag(v)
     v.set_defaults(fn=cmd_skill_remove)
 
+    s = sub.add_parser("update", help="install the newest release now (the release binary), or print the command "
+                       "that upgrades this install")
+    _json_flag(s)
+    s.set_defaults(fn=cmd_update)
+
     sub.add_parser("help", help="this help").set_defaults(fn=lambda a: p.print_help())
     return p
 
@@ -659,8 +777,25 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):  # a line is read when it is said, also down a pipe
         with contextlib.suppress(Exception):
             stream.reconfigure(line_buffering=True)
+    said = sys.argv[1:] if argv is None else argv
+    if said == [update.WORKER]:   # the detached self-update
+        return update.worker()
+    if said == [update.PRUNE]:   # install.sh, after it flips the symlink: old versions nobody runs go
+        if update.install_method() == "binary":
+            update.prune(update.running())
+        return 0
     p = parser()
     a = p.parse_args(argv)
+    update.hold()   # a running version is never pruned from under this process
+    notifier = None if a.command in (None, "update") else update.Notifier(getattr(a, "json", False))
+    try:
+        return _run(p, a)
+    finally:
+        if notifier is not None:
+            notifier.done()
+
+
+def _run(p: argparse.ArgumentParser, a: argparse.Namespace) -> int:
     try:
         if a.command is None:  # bare `kennet`: the help, and the one next step
             p.print_help()

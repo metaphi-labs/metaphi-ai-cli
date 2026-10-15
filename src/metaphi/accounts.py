@@ -6,6 +6,7 @@ import time
 import webbrowser
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -18,6 +19,7 @@ CLIENT_ID = "metaphi-cli"
 
 CHECKOUT = "https://checkout.stripe.com/"  # the one place a checkout link may send the browser
 MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the server says
+ROLES = ("owner", "admin", "billing", "member")   # an organization member's roles, as accounts says them (orgs.ROLES)
 
 
 class Error(MetaphiError):
@@ -37,8 +39,20 @@ def _said(r: httpx.Response) -> str:
     except ValueError:
         return r.text.strip() or f"HTTP {r.status_code}"
     if isinstance(body, dict):
-        return str(body.get("detail") or body.get("error_description") or body.get("error") or body)
+        detail = body.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+            return detail["message"]   # a coded refusal: {"detail": {"code", "message"}}
+        return str(detail or body.get("error_description") or body.get("error") or body)
     return str(body)
+
+
+def _code(r: httpx.Response) -> str | None:
+    """The code of a coded refusal ({"detail": {"code", "message"}}), else None."""
+    try:
+        detail = r.json().get("detail")
+    except (ValueError, AttributeError):
+        return None
+    return detail.get("code") if isinstance(detail, dict) and isinstance(detail.get("code"), str) else None
 
 
 def _json(r: httpx.Response) -> dict[str, Any]:
@@ -53,7 +67,8 @@ def _json(r: httpx.Response) -> dict[str, Any]:
 
 
 def _http() -> httpx.Client:
-    return httpx.Client(base_url=config.accounts_url(), timeout=30.0,
+    from metaphi.update import floor
+    return httpx.Client(base_url=config.accounts_url(), timeout=30.0, event_hooks={"response": [floor]},
                         headers={"user-agent": f"metaphi-cli/{__import__('metaphi').__version__}"})
 
 
@@ -141,8 +156,8 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
 def _keep(body: dict[str, Any], token: str) -> None:
     """Save what the server handed this machine: the token, and the organization's keys or why none came."""
     cfg = config.load()
-    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code"):
-        cfg.pop(name, None)  # the server revoked the keys it handed last
+    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "step_up"):
+        cfg.pop(name, None)  # the server revoked the keys it handed last; a fresh sign-in is the step-up
     cfg.update({"token": token, "email": body.get("email")})
     if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
         cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
@@ -189,7 +204,7 @@ def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
     for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "pending",
-                 "device_code"):
+                 "device_code", "step_up"):
         cfg.pop(name, None)
     config.save(cfg)
     if token:
@@ -208,10 +223,18 @@ def call(method: str, path: str, **kw: Any) -> Any:
     """One request as the signed-in person."""
     with _http() as h:
         r = h.request(method, path, headers=_person(), **kw)
+    if r.status_code == 401 and _code(r) == "step_up_required":
+        # signed in, too long ago to change an organization: the next `kennet login` signs in afresh, not by pickup
+        cfg = config.load()
+        cfg["step_up"] = True
+        config.save(cfg)
+        raise need(_said(r), "step_up_required", "kennet login")
     if r.status_code == 401:
         raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
     if r.status_code >= 400:
-        raise Error(_said(r))
+        e = Error(_said(r))
+        e.status = r.status_code   # what a command may act on beside the sentence: 503 on an invitation
+        raise e
     return r.json()
 
 
@@ -232,6 +255,37 @@ def create_org(name: str) -> dict[str, Any]:
     cfg["no_api_key_code"] = "no_keys_yet" if made.get("admission") == "admitted" else "awaiting_approval"
     config.save(cfg)
     return made
+
+
+def managed(name: str | None) -> dict[str, Any]:
+    """The organization a members command acts on: the one named, or the only one the person manages (owner or
+    admin)."""
+    mine = orgs()
+    if name:
+        for o in mine:
+            if o["id"] == name:
+                return o
+        raise Error(f"you manage no organization {name!r}; yours: {', '.join(o['id'] for o in mine) or 'none'}")
+    if len(mine) == 1:
+        return mine[0]
+    if not mine:
+        raise Error("you are an owner or admin of no organization")
+    raise Error(f"you manage {len(mine)} organizations; name one with --org ({', '.join(o['id'] for o in mine)})")
+
+
+def _member(org_id: str, email: str) -> str:
+    return f"/keys/orgs/{quote(org_id, safe='')}/members/{quote(email.strip().lower(), safe='@')}"
+
+
+def set_member(org_id: str, email: str, role: str) -> dict[str, Any]:
+    """Add a person in a role, or change a member's role. An address off the organization's domains is invited
+    instead: the answer carries the `link` they accept, signed in as that address."""
+    return call("PUT", _member(org_id, email), json={"role": role})
+
+
+def remove_member(org_id: str, email: str) -> dict[str, Any]:
+    """Take a member out, or take back an open invitation to that address."""
+    return call("DELETE", _member(org_id, email))
 
 
 def org_credits() -> list[dict[str, Any]]:

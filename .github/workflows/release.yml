@@ -3,8 +3,11 @@ name: release
 #   pip install metaphi-ai                  PyPI, by trusted publishing (no token stored anywhere), with PEP 740
 #                                           attestations
 #   brew install metaphi-labs/tap/kennet    metaphi-labs/homebrew-tap writes its formula from this release
-#   a single binary per platform            attached to the GitHub release with checksums.txt, each with a
+#   a single binary per platform            attached to the GitHub release with checksums.txt, signed with the
+#                                           release key (checksums.txt.sig, `ssh-keygen -Y verify`), each with a
 #                                           build provenance attestation (`gh attestation verify`)
+#   curl -fsSL .../releases/latest/download/install.sh | sh
+#                                           install.sh, attached to every release, installs that binary
 # Every action is pinned to a commit; every Python dependency, PyInstaller included, comes from uv.lock.
 on:
   push:
@@ -95,8 +98,52 @@ jobs:
         with:
           attestations: true
 
+  sign:
+    # checksums.txt, signed with the release key, which lives only in this protected environment (tags v*, a
+    # reviewer approves). Checked against the key the CLI and install.sh carry before anything ships.
+    needs: [binary]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: "*-*"
+          merge-multiple: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: src
+          sparse-checkout: |
+            src/metaphi/signature.py
+            install.sh
+          sparse-checkout-cone-mode: false
+      - run: sha256sum kennet_*.tar.gz > checksums.txt
+      - name: sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          test -n "$RELEASE_SIGNING_KEY" || { echo "::error::RELEASE_SIGNING_KEY is not set in the pypi environment"; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/release-key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          ssh-keygen -q -Y sign -f "$key" -n kennet-release checksums.txt
+      - name: the key the CLI and install.sh carry verifies it
+        run: |
+          shipped=$(sed -n 's/^PUBLIC_KEY = "\(.*\)"$/\1/p' src/src/metaphi/signature.py)
+          test -n "$shipped" || { echo "::error::src/metaphi/signature.py carries no release key"; exit 1; }
+          grep -qF "PUBLIC_KEY=\"$shipped\"" src/install.sh || { echo "::error::install.sh carries another key"; exit 1; }
+          printf 'kennet-release %s\n' "$(printf '%s' "$shipped" | cut -d' ' -f1-2)" > allowed_signers
+          ssh-keygen -Y verify -f allowed_signers -I kennet-release -n kennet-release -s checksums.txt.sig < checksums.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed
+          path: |
+            checksums.txt
+            checksums.txt.sig
+
   github:
-    needs: [binary, pypi]
+    needs: [binary, sign, pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,12 +154,24 @@ jobs:
         with:
           pattern: "*-*"
           merge-multiple: true
-      - run: sha256sum kennet_*.tar.gz > checksums.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: src
+          sparse-checkout: install.sh
+          sparse-checkout-cone-mode: false
+      - run: cp src/install.sh install.sh && rm -rf src
+      - run: sha256sum -c checksums.txt   # the files released are the files signed
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             kennet_*.tar.gz
             checksums.txt
-      - run: gh release create "$GITHUB_REF_NAME" kennet_*.tar.gz checksums.txt --repo "$GITHUB_REPOSITORY" --generate-notes
+            checksums.txt.sig
+            install.sh
+      - run: gh release create "$GITHUB_REF_NAME" kennet_*.tar.gz checksums.txt checksums.txt.sig install.sh --repo "$GITHUB_REPOSITORY" --generate-notes --latest
         env:
           GH_TOKEN: ${{ github.token }}

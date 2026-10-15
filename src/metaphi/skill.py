@@ -15,7 +15,7 @@ MARK = "<!-- written by `kennet skill install`; edits are overwritten -->"
 
 STUB = f"""---
 name: {NAME}
-description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds. Use when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
+description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds, and the organization's members. Use when the user wants to add, remove or change the role of a member of their Metaphi organization (`kennet org members`), or when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
 ---
 {MARK}
 
@@ -26,8 +26,9 @@ Run `kennet skill show` and follow what it prints: it is the guide for the versi
 If `kennet` is not found, install it, then run `kennet skill show`:
 
 ```sh
-brew install metaphi-labs/tap/kennet     # macOS and Linux
-pip install metaphi-ai                   # anywhere with Python 3.10+
+curl -fsSL https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest/download/install.sh | sh   # macOS, Linux
+brew install metaphi-labs/tap/kennet     # or Homebrew
+pip install metaphi-ai                   # or anywhere with Python 3.10+
 ```
 """
 
@@ -35,7 +36,7 @@ GUIDE = f"""# Kennet from the command line (kennet {__version__})
 
 Kennet is Metaphi AI's RL infrastructure. Through this CLI it offers synthetic twinning (steps 3 to 5) and the
 task sets your organization holds, its deliveries (step 6). Steps 1 and 2, the sign-in, are the same for both.
-Authoring and checking tasks is step 7.
+Managing the organization's members is step 7; authoring and checking tasks is step 8.
 
 `kennet twin <file>` uploads one trace file (JSON, JSON Lines or text) to Metaphi AI's service and writes its
 synthetic twin beside it: the same file, same structure, with every real person, private organization, account
@@ -56,18 +57,24 @@ their data goes.
   | 2 | The command line was wrong (no JSON is printed). |
   | 3 | A sign-in or a key is needed. `error.next_step` is the command, or null when only the user can clear it. |
   | 4 | The same call may work later: the service is unavailable, a limit is reached, or a wait ran out. |
+  | 5 | This version of `kennet` is too old for the service (`upgrade_required`). |
 
 - On an error, read `error.code` and find it in the table in step 4. `error.next_step` is always there: the next
   command to run (add `--json` to it), or null when no command clears it. `error.retry_after_s`, when there, is
   how long the service said to wait before the same call. Never decide from the message text.
 - A command retries a failed request for at most 5 seconds by itself. Past that it returns the error, so a
   command that fails does so quickly; waiting longer is yours to do.
-- Never ask the user for an organization key (`mai_sk_...`), never print one, never pass one as an argument. They
-  are saved by `kennet login` or come from `METAPHI_API_KEY`.
+- Never ask the user to paste a token, key or code into the chat, never print one, never pass one as an
+  argument. The one code they handle is the sign-in's `user_code`, which they check on the page. Keys are saved by
+  `kennet login` or come from `METAPHI_API_KEY`.
 - An organization has one free test run in all (`--test`): a real twin through the same pipeline, of a file up
   to 2 MiB. Spend it on a representative file, and ask the user which one before you do. Once it is used the
   refusal is `test_runs_used`: runs from then on are live. A live run draws the organization's prepaid credit:
   ask the user before the first one, even after a good test run.
+- `kennet` says nothing about new releases under `--json`. What install.sh installed updates itself in the
+  background, only to a release signed by Metaphi AI (`KENNET_DISABLE_AUTOUPDATE=1` stops it). `kennet update
+  --json` answers `version`, `latest`, `method` and `next_step`, the upgrade command, when this install is not
+  the newest.
 - When a step needs the user and they are not there, stop and hand back what they have to do. Do not work around it.
 - When something fails that you cannot clear, quote `error.request_id` to the user, or `error.run_id` (the twin's
   id) for a run that failed.
@@ -84,32 +91,41 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
 - `key.source` is `METAPHI_API_KEY`: the environment holds a key. No sign-in is needed, on this machine or in
   CI; go to step 3. (That key decides live or test by itself: `mai_sk_test_...` is a test key.)
 - `error.code` `not_signed_in` (from this or any command): go to step 2.
-- `error.code` `no_api_key`: the user is signed in, and the sign-in was handed no key; the message says why, and
-  `next_step` says what to do:
-  - `kennet org create <name>`: the user is in no organization. Ask them what theirs is called, then make it:
-    `kennet org create "Acme Robotics" --json`. They own it. `"admission": "pending"` means Metaphi AI has to
-    approve it, which takes a person on their side: tell the user they will get an email, and stop. Once they
-    say it came, run `kennet login --json`. `"admission": "admitted"` means run it now.
-  - `kennet login`: run `kennet login --json` once. The machine is signed in, so it opens no browser: it asks
-    for the keys by the sign-in it holds and saves them if the organization has access now. If it ends in
-    `no_api_key` again, tell the user the message as it is, and stop.
+- `error.code` `no_api_key`: the user is signed in, and the sign-in was handed no key. `reason` beside `error`
+  says why:
+
+  | `reason` | Means | What to do |
+  | --- | --- | --- |
+  | `no_organization` | The user is in no organization. | Ask whether their company already uses Kennet. If it does, an owner or admin there adds them (`kennet org members add`, step 7), then `kennet login --json`. If not, ask what theirs is called and make it: `kennet org create "Acme Robotics" --json`. They own it. `"admission": "pending"`: Metaphi AI approves it, and the user is mailed; stop until they say it came, then `kennet login --json`. `"admission": "admitted"`: run that now. |
+  | `awaiting_approval` | Their organization waits for Metaphi AI to approve it. | Tell the user they are mailed when it is; then `kennet login --json`. Nothing else clears it. |
+  | `no_keys_yet` | The organization was just made or approved. | `kennet login --json` once. |
+  | `no_access` | Their organization holds no access to this yet. | Tell the user to ask their Metaphi AI contact, then stop. |
+  | `service_account` | The sign-in is a service account, not a person. | A service account's key is made in the console and set as `METAPHI_API_KEY`; a person signs in as themselves (step 2). |
+
+  Any other `reason`, or none: run `kennet login --json` once (a signed-in machine opens no browser); if it ends in
+  `no_api_key` again, tell the user the message as it is, and stop.
 - Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
 - Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists only those the user
   manages (owner or admin), with `credits_usd`, the prepaid balance, when they may see it; it is empty for a member.
 
 ## 2. Sign in (needs the user, once)
 
-No browser and no user at hand (a server, CI, a sandbox)? There is no sign-in there: the user makes a key in the
-console and sets `METAPHI_API_KEY` in the environment. Ask them for that, never for the key itself.
-
 ```sh
 kennet login --json
 ```
 
-It returns at once with `"status": "pending"`: nobody is signed in yet. It also opens the sign-in page in the
-user's default browser when this machine has one; add `--no-browser` to only print it. Show the user
-`verification_uri_complete` and `user_code` either way, and ask them to check the code matches and approve it
-within `expires_in` seconds. Running it again while that code stands returns the same code. Then:
+It returns at once with `"status": "pending"`: nobody is signed in yet. It opens the sign-in page in this
+machine's browser when there is one (`--no-browser` only prints it). Tell the user, with the page and code exactly
+as printed:
+
+- Open `verification_uri_complete` in any browser: this machine's, or another device's (a phone, a laptop) when
+  this one has none, as over SSH or in a sandbox. The code ties the page to this terminal.
+- Sign in with Google or GitHub as their work email, the address their organization knows them by. The address
+  must be verified with that provider.
+- Before approving, check that the page names the Kennet CLI and shows the same code as `user_code`; if either
+  is off, do not approve. Approve within `expires_in` seconds.
+
+Running it again while that code stands returns the same code. Then:
 
 ```sh
 kennet login --complete --json
@@ -117,12 +133,25 @@ kennet login --complete --json
 
 This waits up to 60 seconds for the approval (`--timeout <seconds>` changes that). `error.code`
 `authorization_pending` means not approved yet: run it again, or stop and wait for the user to say they have.
-`"keys": true` means the organization's live and test keys are saved on this machine. `error.code` `no_api_key`
-means the sign-in worked and no key came with it; `error.message` says why. `next_step` is
-`kennet org create <name>` when the user is in no organization (step 1 says how), and null otherwise (the
-organization waits for approval, or has no access): tell the user, and stop. Each sign-in replaces the keys the one
-before it saved on any machine. On a machine that is signed in already, `kennet login --json` opens no browser and
-returns this result at once.
+`"keys": true` means the organization's live and test keys are saved on this machine: run `kennet whoami --json`
+and tell the user the `email` and `org` it names. `error.code` `no_api_key` means the sign-in worked and no key
+came with it: `reason` beside `error` says why (step 1's table). Each sign-in replaces the keys the one before it
+saved on any machine. On a machine that is signed in already, `kennet login --json` opens no browser and returns
+this result at once.
+
+When the page does not get there:
+
+| The user sees | What to do |
+| --- | --- |
+| Nothing opens, or the sign-in window closes at once | The browser blocked the popup: allow popups for the page, and click sign-in again. |
+| "email not verified" | The address is not verified with that provider: verify it there (GitHub: Settings, Emails), or sign in with the other provider. |
+| "that code is unknown or expired" (`unknown_or_expired`) | Run `kennet login --json` for a new code, and start again. |
+| "that sign-in is too old to approve a terminal" (`sign_in_too_old`) | Sign in again on the page with the button, then approve. |
+| `whoami` names the wrong address | Run `kennet logout`, then step 2 again; ask them to sign out of that account in the browser, or use a private window. |
+
+Servers and CI never sign in: an owner or admin makes the organization a key in the console
+(https://app.metaphi.ai/console), and it is set as `METAPHI_API_KEY`, or saved on the machine by
+`kennet login --with-api-key`, which reads it from stdin. The user does that; you never see the key.
 
 ## 3. Twin a file
 
@@ -168,10 +197,15 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 
 | `error.code` | What to do |
 | --- | --- |
+| `upgrade_required` | This `kennet` is too old for the service. `next_step` is the upgrade command for how it was installed (`brew upgrade ...`, `pip install -U ...`, `kennet update`, or the install.sh line): ask the user, run it, then the same command again. |
+| `update_unreachable` | `kennet update` could not reach GitHub (`retryable`). Try once more later; nothing changed. |
+| `update_unsigned`, `update_mismatch`, `update_refused` | The download was not Metaphi AI's signed release, or went elsewhere; nothing was installed. Tell the user; do not retry or work around it. |
+| `update_missing`, `update_broken`, `update_not_permitted` | The update could not be installed here; nothing changed. `next_step` is the install.sh line: ask the user before running it. |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
+| `step_up_required` | A change to the organization needs a recent sign-in. Step 2, from its start, then the same command once more. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
 | `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet org create <name>`, the user is in no organization: make theirs (step 1). If it is `kennet login`, run `kennet login --json` once: it picks the keys up, with no browser, if access was given since. If it comes back `no_api_key` again, tell the user the message and stop. |
-| `invalid_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
+| `invalid_api_key`, `missing_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
 | `insufficient_scope` | The key does not hold access to what the command reaches. Run `kennet login --json` once: a signed-in machine is handed new keys with no browser. If it repeats, tell the user. |
 | `auth_unavailable`, `unavailable`, `balance_unavailable`, `unreachable` | The service could not answer; nothing was started. Wait `retry_after_s` (30 seconds when absent), run the same command once more, then stop and tell the user with the `request_id`. |
 | `run_unavailable` | The twin started and failed on Metaphi AI's side; nothing was written or charged. "Upload the trace again" means run `next_step`, `kennet twin <file>`, with the options you used before. Do that once. If it fails the same way, stop and give the user both `run_id`s. |
@@ -251,7 +285,37 @@ browser), `directory_in_use` (the directory holds another delivery; `next_step` 
 not `<name>@<version>`), `no_container_client` (nothing to sign in; use `kennet registry token`),
 `registry_login_failed` (the client refused; its reason is in the message), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 
-## 7. Author and check tasks
+## 7. Your organization's members
+
+Owners and admins manage who is in the organization. Ask the user before every change: whom, and in which role.
+
+```sh
+kennet org members --json                             # {{"org", "role", "members": [{{"email", "role"}}], "invitations": [{{"id", "email", "role", "expires"}}]}}
+kennet org members add bob@acme.com --role admin --json   # {{"org", "email", "role", "status": "member" or "invited", "invitation" when invited, "members"}}
+kennet org members role bob@acme.com billing --json   # the same answer as add
+kennet org members remove bob@acme.com --json         # {{"org", "email", "status": "removed" or "uninvited", "members"}}
+```
+
+- Roles are exactly these four; `add` defaults to `member`:
+
+  | Role | May |
+  | --- | --- |
+  | `owner` | everything: members, owners, keys, credit. Only an owner makes, changes or removes an owner, and the organization keeps one. |
+  | `admin` | add, change and remove members other than owners; manage keys; see the balance. |
+  | `billing` | see the balance and buy credit; nothing else. |
+  | `member` | use the organization's keys. |
+
+- `"status": "invited"`: the address is off the organization's domains, so it is not a member yet. Metaphi AI
+  mails them an invitation, which they accept signed in as that address, within a week. Tell the user so; there
+  is no link to pass on. `remove` on that address takes the invitation back. `error.code` `mail_unavailable`: the
+  invitation could not be mailed; the user invites them on the keys page the message names.
+- `--org <id>` names the organization when the user manages several; the error lists them.
+- `error.code` `step_up_required`: the change needs a recent sign-in. Run `kennet login --json` (and
+  `--complete`, step 2) with the user, then the same command once more.
+- Any other refusal (only an owner changes an owner; the organization keeps one owner; the address belongs to
+  another organization) is the server's sentence in `error.message`: tell the user, and do not retry.
+
+## 8. Author and check tasks
 
 Authoring runs through Kennet's MCP tools, not this CLI. Connect them once, then sign in from `/mcp`:
 

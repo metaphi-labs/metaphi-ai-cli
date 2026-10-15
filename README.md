@@ -5,14 +5,55 @@ The command line for Kennet, Metaphi AI's RL infrastructure. Sign in and twin ag
 ## Install
 
 ```sh
-brew install metaphi-labs/tap/kennet    # macOS and Linux
+curl -fsSL https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest/download/install.sh | sh
 ```
 
-No Homebrew? Download the binary for your platform from the
-[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), unpack it and put `kennet` on your
-`PATH`. Each release lists its `checksums.txt`.
+macOS and Linux, x86_64 and arm64, no root; it needs `ssh-keygen` (OpenSSH), which both have. It checks that the
+latest release's `checksums.txt` is signed by Metaphi AI's release key, that the binary matches it and that it
+starts, then puts it in `~/.local/share/kennet/versions/<version>/` with `~/.local/bin/kennet` (or
+`$KENNET_INSTALL_DIR/kennet`) a symlink to it. It says the line to add if that directory is not on your `PATH`, and
+installs the Claude Code skill when Claude Code is there. Run it again to upgrade; a plain-file install from an
+earlier version is moved to this layout. The binary then keeps itself current (below).
 
-Calling it from Python instead: `pip install metaphi-ai` gives you the same command and the library (see below).
+```sh
+brew install metaphi-labs/tap/kennet    # Homebrew, macOS and Linux
+pip install metaphi-ai                  # Python 3.10+, with the library
+```
+
+Or download the binary for your platform from the
+[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), and check `checksums.txt.sig`
+(`ssh-keygen -Y verify -n kennet-release`, the key is in `install.sh`) and `checksums.txt`. A binary put there by
+hand does not update itself; the notice names install.sh.
+
+
+### Staying current
+
+`kennet --version` prints the version. Once a day `kennet` looks at the releases, on a thread that never holds a
+command up, and when a newer one is out says so once, on stderr after the command's output, with the upgrade command
+for how this copy was installed:
+
+| Installed with | Upgrade |
+| --- | --- |
+| `install.sh` | nothing: it updates itself (below), or `kennet update` now |
+| Homebrew | `brew upgrade metaphi-labs/tap/kennet` |
+| `pip`, `pipx`, `uv tool` | `pip install -U metaphi-ai`, `pipx upgrade metaphi-ai`, `uv tool upgrade metaphi-ai` |
+| a release binary put somewhere by hand | the install.sh line above |
+
+The notice is never shown under `--json`, when stderr is not a terminal, in CI (`CI` set), or with
+`KENNET_NO_UPDATE_NOTIFIER=1`, and at most once a day.
+
+What install.sh installed updates itself in the background, as Claude Code does. The new version goes in a
+directory of its own, only once its `checksums.txt` carries Metaphi AI's release signature, its archive matches,
+and it answers `--version`; then the `kennet` symlink is flipped to it in one rename. A command already running
+keeps running on its own version, and old versions are removed once nothing runs them (the last two are kept).
+Downloads go to GitHub only. It never touches a Homebrew or pip install, is off in CI, and
+`KENNET_DISABLE_AUTOUPDATE=1` turns it off for a pinned version. A failure says nothing on screen; it is a line in
+`~/.config/metaphi/update.log`. `kennet update` looks and installs now, or prints the command for any other
+install; when it cannot, it says why in one line with the next step (`update_unreachable` is worth a retry; a
+signature or checksum refusal is not).
+
+When the service no longer serves your version, every command fails with `upgrade_required` (exit 5), and
+`next_step` is the upgrade command above.
 
 ## Quickstart (2 minutes)
 
@@ -132,6 +173,7 @@ The exit status says what kind of end it was:
 | 2 | The command line was wrong. |
 | 3 | A sign-in or a key is needed (`auth_error`). |
 | 4 | The same call may work later: the service is unavailable, a limit is reached, or a wait ran out. |
+| 5 | This version is too old for the service (`upgrade_required`); `next_step` upgrades it. |
 
 A request that fails in transit or with a retryable error is sent again at most twice, within 5 seconds in all;
 a longer `Retry-After` is handed back as `retry_after_s`, not waited out.
@@ -176,6 +218,8 @@ but for the last:
 | `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org create <name>` when you are in no organization; `null` while yours waits for approval, and from `login` itself; else `kennet login` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
+| `upgrade_required` (`upgrade_error`) | the service no longer serves this version (exit 5) | the upgrade command for this install |
+| `step_up_required` | a change to the organization's members needs a sign-in more recent than this one | `kennet login` (signs in afresh) |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
 
 Any other error the CLI says itself, such as a file that is not there, is a plain `MetaphiError` with `code` `None`.
@@ -209,8 +253,23 @@ If you are in no organization, make yours: `kennet org create "Acme Robotics"`. 
 Metaphi AI approves each new organization; you are mailed when yours is, and `kennet login` then saves its keys, with no second sign-in.
 `kennet whoami` says so while it waits.
 
-A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
-the console at <https://app.metaphi.ai/console>.
+A sign-in the server has ended is an error, not a name read back from a file.
+
+Owners and admins manage the organization's members from here (keys are made in the console at
+<https://app.metaphi.ai/console>):
+
+```sh
+kennet org members                              # members and open invitations, with each one's role
+kennet org members add bob@acme.com             # in as a member; --role owner|admin|billing|member
+kennet org members role bob@acme.com admin      # change a member's role
+kennet org members remove bob@acme.com          # take them out, or take back their invitation
+```
+
+An address on a domain your organization claims joins at once. Any other address is mailed an invitation, which
+the person accepts signed in as that address, within a week. Only an owner makes, changes or removes an owner,
+and the organization always keeps one. A change needs a recent sign-in: when yours is too old, `kennet` offers a
+fresh one at a terminal and tries again; elsewhere it fails with `step_up_required` and `kennet login` signs in
+afresh. `--org <id>` picks the organization when you manage several.
 
 ## Credits
 
@@ -263,6 +322,8 @@ sent one.
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
 | `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `kennet twin` waits for its twin to end (`--timeout` per call) |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
+| `KENNET_NO_UPDATE_NOTIFIER` | unset: `1` turns the daily new-release notice off |
+| `KENNET_DISABLE_AUTOUPDATE` | unset: `1` stops the release binary from updating itself |
 
 Sign out with `kennet logout`. It ends this sign-in everywhere it is used, revokes the keys `kennet login`
 handed out, and clears the saved keys from this machine.
