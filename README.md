@@ -224,6 +224,7 @@ but for the last:
 | `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
 | `no_api_key` | signed in, but the sign-in was handed no key; the message says why, and `reason` which it is (below). Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org join <org>` when an organization has invited you (`invitation_pending`); `kennet org create <name>` when you are in no organization and none has; `null` when you were taken out of yours (`removed`: an owner of it adds you back), while yours waits for approval, and from `login` itself; else `kennet login` |
 | `no_invitation` | `kennet org join` found no open invitation from that organization: it expired or was taken back | `null` |
+| `invitation_for_another_address` | the invitation `kennet org join` names was sent to another address than the one signed in: `kennet logout`, then `kennet login` as that address | `null` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
 | `network` (`api_error`) | no answer from a server at all: the message names the host and why (`retryable`, exit 4) | `null` |
 | `internal` (`api_error`) | something the CLI did not expect; `debug_log` beside the error is the file to report it with | `null` |
@@ -255,8 +256,7 @@ version, shown as `newer` by `list`. You run the tasks with Harbor on your own m
 
 ## Your organization
 
-`kennet whoami` asks the servers who you are: your organization, the organizations you manage with your role and
-what each may do, the prepaid balance when you may see it, and which key calls run on (the saved one, or
+`kennet whoami` asks the servers who you are: each organization you are in, with your role and what it may do, the prepaid balance when you may see it, and which key calls run on (the saved one, or
 `METAPHI_API_KEY`), by its last four characters. It asks the twin service whether each key works, and exits 0 only
 when the one in use does.
 If an organization has invited you, `kennet login` and `kennet whoami` say so (`invitation_pending`) and name the

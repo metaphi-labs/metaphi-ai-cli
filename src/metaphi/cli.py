@@ -483,10 +483,13 @@ def cmd_org_create(a: argparse.Namespace) -> None:
     made = accounts.create_org(a.name)
     ready = made.get("admission") == "admitted"
     message = str(made.get("message") or (f"{made['id']} is made and you own it." if ready else APPROVAL))
-    # approved at once: `kennet login` saves the keys now. Waiting: nothing to run until the mail comes
+    # the server says what follows: `kennet login` once it is approved, nothing to run while it waits for the mail.
+    # One that does not say: the same, from `admission`
+    step = made.get("next_step", "kennet login" if ready else None)
+    step = step if isinstance(step, str) and step else None
     _out(a, {"id": made["id"], "name": made.get("name"), "role": made.get("role"),
-             "admission": made.get("admission"), "message": message, "next_step": "kennet login" if ready else None},
-         message, "Next: kennet login" if ready else "")
+             "admission": made.get("admission"), "message": message, "next_step": step},
+         message, f"Next: {step}" if step else "")
 
 
 def cmd_org_join(a: argparse.Namespace) -> None:

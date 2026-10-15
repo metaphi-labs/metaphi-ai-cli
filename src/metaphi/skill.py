@@ -112,8 +112,9 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
 - `invitation`, when there, is an invitation waiting for the user: `kennet org join <org> --json` accepts it.
 - When the saved key is refused, `whoami` asks accounts why, as `kennet login` would on a signed-in machine: the
   answer is the real reason (`removed`, `invitation_pending`, ...), and keys handed over then are saved.
-- Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists only those the user
-  manages (owner or admin), with `credits_usd`, the prepaid balance, when they may see it; it is empty for a member.
+- Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists each organization the
+  user is in, with their `role` and what it holds (`grants`), and `credits_usd`, the prepaid balance, when they may
+  see it.
 
 ## 2. Sign in (needs the user, once)
 
@@ -305,7 +306,9 @@ kennet org join acme --json        # or the invitation's id: kennet org join inv
 It accepts the invitation, signed in as the address it was sent to, and saves the organization's keys:
 `{{"email", "org", "keys": true, "joined": {{"org", "role"}}, "next_step"}}`. Ask the user first: a person is in one
 organization. `error.code` `no_invitation`: there is no open invitation from it (expired or taken back); tell the
-user to ask an owner of it for a new one. `step_up_required`: as below. `no_api_key` after joining: step 1's table.
+user to ask an owner of it for a new one. `invitation_for_another_address`: the invitation was mailed to another address than the one signed in; the
+user runs `kennet logout`, then step 2 signed in as that address. `step_up_required`: as below. `no_api_key` after
+joining: step 1's table.
 
 Owners and admins manage who is in the organization. Ask the user before every change: whom, and in which role.
 

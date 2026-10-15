@@ -20,6 +20,7 @@ CLIENT_ID = "metaphi-cli"
 CHECKOUT = "https://checkout.stripe.com/"  # the one place a checkout link may send the browser
 MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the server says
 ROLES = ("owner", "admin", "billing", "member")   # an organization member's roles, as accounts says them (orgs.ROLES)
+MANAGERS = ("owner", "admin")   # the roles that manage an organization's members
 
 
 class Error(MetaphiError):
@@ -248,7 +249,7 @@ def call(method: str, path: str, **kw: Any) -> Any:
     if r.status_code == 401:
         raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
     if r.status_code >= 400:
-        e = Error(_said(r))
+        e = Error(_said(r), code=_code(r))   # the server's code, when its refusal carries one
         e.status = r.status_code   # what a command may act on beside the sentence: 503 on an invitation
         raise e
     return r.json()
@@ -291,10 +292,15 @@ def _invitation_org(target: str) -> str:
 def join(target: str) -> dict[str, Any]:
     """Accept the invitation of the organization named (or of the invitation id given), as the signed-in person:
     they join it in the role it named. The keys come after, by `pickup`."""
-    org_id = _invitation_org(target.strip())
-    try:
-        got = call("POST", f"/keys/invitations/{quote(org_id, safe='')}")
+    target = target.strip()
+    org_id = _invitation_org(target)
+    try:   # an invitation named by its id says which one; by the organization, the one open to this address
+        got = call("POST", f"/keys/invitations/{quote(org_id, safe='')}",
+                   **({"json": {"id": target}} if target.startswith("inv_") else {}))
     except Error as e:
+        if e.code == "invitation_for_another_address":   # sent to another address than this sign-in's
+            e.advice = "run `kennet logout`, then `kennet login` as the address the invitation was sent to"
+            raise
         if getattr(e, "status", None) != 404:
             raise
         e = Error(f"{e.message}; it may have expired or been taken back", code="no_invitation")
@@ -307,8 +313,8 @@ def join(target: str) -> dict[str, Any]:
 
 def managed(name: str | None) -> dict[str, Any]:
     """The organization a members command acts on: the one named, or the only one the person manages (owner or
-    admin)."""
-    mine = orgs()
+    admin). Accounts lists every organization the person is in; only those they manage are theirs to act on."""
+    mine = [o for o in orgs() if o.get("role") in MANAGERS]
     if name:
         for o in mine:
             if o["id"] == name:

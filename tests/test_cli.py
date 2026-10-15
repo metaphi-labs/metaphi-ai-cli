@@ -1144,3 +1144,47 @@ def test_anything_unexpected_is_one_line_and_a_debug_log_never_a_traceback(monke
     log = config.home() / "debug.log"
     assert seen["debug_log"] == str(log) and lines[1].endswith(str(log))
     assert "Traceback" in log.read_text() and "KeyError: 'org'" in log.read_text()
+
+
+@respx.mock
+def test_org_create_says_what_accounts_says_comes_next(capsys):
+    config.save({"token": "tok"})
+    waits = "Metaphi AI approves new organizations; you're emailed when it's done, then run `kennet login`"
+    made = respx.post(f"{A}/keys/orgs").respond(json={"id": "acme", "name": "Acme", "role": "owner",
+                                                      "admission": "pending", "message": waits, "next_step": None})
+    assert cli.main(["org", "create", "Acme"]) == 0
+    assert capsys.readouterr().out == f"{waits}\n"   # no `Next:`: nothing to run until the mail comes
+    made.respond(json={"id": "acme", "name": "Acme", "role": "owner", "admission": "admitted",
+                       "message": "Acme is made and approved.", "next_step": "kennet login"})
+    assert cli.main(["org", "create", "Acme", "--json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert (got["message"], got["next_step"]) == ("Acme is made and approved.", "kennet login")
+
+
+@respx.mock
+def test_members_commands_act_only_on_organizations_the_person_manages_and_whoami_shows_every_one(capsys):
+    config.save({"token": "tok", "email": "alice@acme.test", "org": "acme", "api_key": "mai_sk_live_abcd"})
+    beta = {"id": "beta", "name": "Beta", "role": "member", "admission": "admitted", "grants": ["twin"]}
+    respx.get(f"{A}/keys/orgs").respond(json=[beta, ACME])
+    assert cli.main(["org", "members", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["org"] == "acme"
+    assert cli.main(["org", "members", "--org", "beta"]) == cli.FAILED
+    assert "you manage no organization 'beta'; yours: acme" in capsys.readouterr().err
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
+    assert cli.main(["whoami"]) == 0
+    assert "org:    beta (member) holds twin" in capsys.readouterr().out
+
+
+@respx.mock
+def test_org_join_by_id_names_the_invitation_and_another_address_is_told_to_sign_in_as_it(capsys):
+    config.save({"token": "tok", "email": "bob@gmail.test", "invitation": INVITED["invitation"]})
+    accept = respx.post(f"{A}/keys/invitations/acme").respond(403, json={"detail": {
+        "code": "invitation_for_another_address", "message": "this invitation was sent to bob@acme.test"}})
+    assert cli.main(["org", "join", "inv_9"]) == cli.FAILED
+    assert json.loads(accept.calls[0].request.content) == {"id": "inv_9"}
+    assert capsys.readouterr().err == (
+        "error: this invitation was sent to bob@acme.test (code: invitation_for_another_address)\n"
+        "Next: run `kennet logout`, then `kennet login` as the address the invitation was sent to\n")
+    assert cli.main(["org", "join", "acme"]) == cli.FAILED
+    assert accept.calls[1].request.content == b""   # by the organization: the invitation open to this address
