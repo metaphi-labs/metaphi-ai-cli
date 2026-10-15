@@ -232,7 +232,9 @@ def call(method: str, path: str, **kw: Any) -> Any:
     if r.status_code == 401:
         raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
     if r.status_code >= 400:
-        raise Error(_said(r))
+        e = Error(_said(r))
+        e.status = r.status_code   # what a command may act on beside the sentence: 503 on an invitation
+        raise e
     return r.json()
 
 

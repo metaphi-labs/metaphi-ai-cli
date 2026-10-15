@@ -872,12 +872,19 @@ def test_org_members_add_off_domain_says_the_invitation_is_mailed_and_prints_no_
     config.save({"token": "tok"})
     respx.get(f"{A}/keys/orgs").respond(json=[ACME])
     respx.put(f"{A}/keys/orgs/acme/members/erin@gmail.test").respond(
-        json={"members": ACME["members"], "invited": {"erin@gmail.test": "admin"}, "id": "inv_2"})
+        json={"members": ACME["members"], "invited": {"erin@gmail.test": "admin"}, "id": "inv_2",
+              "message": "invitation mailed to erin@gmail.test"})
     assert cli.main(["org", "members", "add", "erin@gmail.test", "--role", "admin"]) == 0
     assert capsys.readouterr().out == "invitation mailed to erin@gmail.test; they accept it signed in as that address\n"
     assert cli.main(["org", "members", "add", "erin@gmail.test", "--role", "admin", "--json"]) == 0
     got = json.loads(capsys.readouterr().out)
     assert (got["status"], got["invitation"], "link" in got) == ("invited", "inv_2", False)
+    # a deployment that cannot mail it: the keys page is where the person invites them
+    respx.put(f"{A}/keys/orgs/acme/members/erin@gmail.test").respond(
+        503, json={"detail": "invitations cannot be mailed from here; invite erin@gmail.test on the keys page"})
+    assert cli.main(["org", "members", "add", "erin@gmail.test", "--json"]) == cli.FAILED
+    got = json.loads(capsys.readouterr().out)["error"]
+    assert got["code"] == "mail_unavailable" and got["message"].endswith(f"on the keys page: {A}/keys")
 
 
 def test_the_skill_names_every_error_code_the_cli_says_or_acts_on():

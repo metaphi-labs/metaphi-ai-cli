@@ -71,9 +71,10 @@ their data goes.
   to 2 MiB. Spend it on a representative file, and ask the user which one before you do. Once it is used the
   refusal is `test_runs_used`: runs from then on are live. A live run draws the organization's prepaid credit:
   ask the user before the first one, even after a good test run.
-- `kennet` says nothing about new releases under `--json`, and the release binary updates itself in the background
-  (`KENNET_DISABLE_AUTOUPDATE=1` stops it). `kennet update --json` answers `version`, `latest`, `method` and
-  `next_step`, the upgrade command, when this install is not the newest.
+- `kennet` says nothing about new releases under `--json`. What install.sh installed updates itself in the
+  background, only to a release signed by Metaphi AI (`KENNET_DISABLE_AUTOUPDATE=1` stops it). `kennet update
+  --json` answers `version`, `latest`, `method` and `next_step`, the upgrade command, when this install is not
+  the newest.
 - When a step needs the user and they are not there, stop and hand back what they have to do. Do not work around it.
 - When something fails that you cannot clear, quote `error.request_id` to the user, or `error.run_id` (the twin's
   id) for a run that failed.
@@ -196,7 +197,10 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 
 | `error.code` | What to do |
 | --- | --- |
-| `upgrade_required` | This `kennet` is too old for the service. `next_step` is the upgrade command for how it was installed (`brew upgrade ...`, `pip install -U ...`, or `kennet update`): ask the user, run it, then the same command again. |
+| `upgrade_required` | This `kennet` is too old for the service. `next_step` is the upgrade command for how it was installed (`brew upgrade ...`, `pip install -U ...`, `kennet update`, or the install.sh line): ask the user, run it, then the same command again. |
+| `update_unreachable` | `kennet update` could not reach GitHub (`retryable`). Try once more later; nothing changed. |
+| `update_unsigned`, `update_mismatch`, `update_refused` | The download was not Metaphi AI's signed release, or went elsewhere; nothing was installed. Tell the user; do not retry or work around it. |
+| `update_missing`, `update_broken`, `update_not_permitted` | The update could not be installed here; nothing changed. `next_step` is the install.sh line: ask the user before running it. |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
 | `step_up_required` | A change to the organization needs a recent sign-in. Step 2, from its start, then the same command once more. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
@@ -287,7 +291,7 @@ Owners and admins manage who is in the organization. Ask the user before every c
 
 ```sh
 kennet org members --json                             # {{"org", "role", "members": [{{"email", "role"}}], "invitations": [{{"id", "email", "role", "expires"}}]}}
-kennet org members add bob@acme.com --role admin --json   # {{"org", "email", "role", "status": "member" or "invited", "members"}}
+kennet org members add bob@acme.com --role admin --json   # {{"org", "email", "role", "status": "member" or "invited", "invitation" when invited, "members"}}
 kennet org members role bob@acme.com billing --json   # the same answer as add
 kennet org members remove bob@acme.com --json         # {{"org", "email", "status": "removed" or "uninvited", "members"}}
 ```
@@ -303,7 +307,8 @@ kennet org members remove bob@acme.com --json         # {{"org", "email", "statu
 
 - `"status": "invited"`: the address is off the organization's domains, so it is not a member yet. Metaphi AI
   mails them an invitation, which they accept signed in as that address, within a week. Tell the user so; there
-  is no link to pass on. `remove` on that address takes the invitation back.
+  is no link to pass on. `remove` on that address takes the invitation back. `error.code` `mail_unavailable`: the
+  invitation could not be mailed; the user invites them on the keys page the message names.
 - `--org <id>` names the organization when the user manages several; the error lists them.
 - `error.code` `step_up_required`: the change needs a recent sign-in. Run `kennet login --json` (and
   `--complete`, step 2) with the user, then the same command once more.

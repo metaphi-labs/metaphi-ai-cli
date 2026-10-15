@@ -485,7 +485,14 @@ def cmd_org_members_set(a: argparse.Namespace) -> None:
     """`add` and `role`: one PUT, which adds a person in the role or changes a member's."""
     o = accounts.managed(a.org)
     email = a.email.strip().lower()
-    got = _stepped_up(a, lambda: accounts.set_member(o["id"], email, a.role))
+    try:
+        got = _stepped_up(a, lambda: accounts.set_member(o["id"], email, a.role))
+    except accounts.Error as e:
+        if getattr(e, "status", None) != 503:
+            raise
+        # the address is off the organization's domains and the invitation cannot be mailed from here
+        raise accounts.Error(f"the invitation to {email} could not be mailed; invite them on the keys page: "
+                             f"{config.accounts_url()}/keys", code="mail_unavailable") from None
     members, _ = _members(got)
     result = {"org": o["id"], "email": email, "role": a.role}
     invited = got.get("invited") if isinstance(got.get("invited"), dict) else {}
@@ -770,10 +777,16 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):  # a line is read when it is said, also down a pipe
         with contextlib.suppress(Exception):
             stream.reconfigure(line_buffering=True)
-    if (sys.argv[1:] if argv is None else argv) == [update.WORKER]:   # the detached self-update
+    said = sys.argv[1:] if argv is None else argv
+    if said == [update.WORKER]:   # the detached self-update
         return update.worker()
+    if said == [update.PRUNE]:   # install.sh, after it flips the symlink: old versions nobody runs go
+        if update.install_method() == "binary":
+            update.prune(update.running())
+        return 0
     p = parser()
     a = p.parse_args(argv)
+    update.hold()   # a running version is never pruned from under this process
     notifier = None if a.command in (None, "update") else update.Notifier(getattr(a, "json", False))
     try:
         return _run(p, a)

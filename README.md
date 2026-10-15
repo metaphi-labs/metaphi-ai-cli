@@ -8,10 +8,12 @@ The command line for Kennet, Metaphi AI's RL infrastructure. Sign in and twin ag
 curl -fsSL https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest/download/install.sh | sh
 ```
 
-macOS and Linux, x86_64 and arm64, no root. It checks the latest release's binary against its `checksums.txt`,
-puts it in `~/.local/bin` (or `$KENNET_INSTALL_DIR`), says the line to add if that is not on your `PATH`, and
-installs the Claude Code skill when Claude Code is there. Run it again to upgrade; the binary also keeps itself
-current (below).
+macOS and Linux, x86_64 and arm64, no root; it needs `ssh-keygen` (OpenSSH), which both have. It checks that the
+latest release's `checksums.txt` is signed by Metaphi AI's release key, that the binary matches it and that it
+starts, then puts it in `~/.local/share/kennet/versions/<version>/` with `~/.local/bin/kennet` (or
+`$KENNET_INSTALL_DIR/kennet`) a symlink to it. It says the line to add if that directory is not on your `PATH`, and
+installs the Claude Code skill when Claude Code is there. Run it again to upgrade; a plain-file install from an
+earlier version is moved to this layout. The binary then keeps itself current (below).
 
 ```sh
 brew install metaphi-labs/tap/kennet    # Homebrew, macOS and Linux
@@ -19,29 +21,36 @@ pip install metaphi-ai                  # Python 3.10+, with the library
 ```
 
 Or download the binary for your platform from the
-[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest) and check it against `checksums.txt`.
+[latest release](https://github.com/metaphi-labs/metaphi-ai-cli/releases/latest), and check `checksums.txt.sig`
+(`ssh-keygen -Y verify -n kennet-release`, the key is in `install.sh`) and `checksums.txt`. A binary put there by
+hand does not update itself; the notice names install.sh.
 
 
 ### Staying current
 
 `kennet --version` prints the version. Once a day `kennet` looks at the releases, on a thread that never holds a
-command up, and when a newer one is out says so on stderr after the command's output, with the upgrade command for
-how this copy was installed:
+command up, and when a newer one is out says so once, on stderr after the command's output, with the upgrade command
+for how this copy was installed:
 
 | Installed with | Upgrade |
 | --- | --- |
+| `install.sh` | nothing: it updates itself (below), or `kennet update` now |
 | Homebrew | `brew upgrade metaphi-labs/tap/kennet` |
 | `pip`, `pipx`, `uv tool` | `pip install -U metaphi-ai`, `pipx upgrade metaphi-ai`, `uv tool upgrade metaphi-ai` |
-| `install.sh`, or the release binary | nothing: it updates itself (below), or `kennet update` now |
+| a release binary put somewhere by hand | the install.sh line above |
 
 The notice is never shown under `--json`, when stderr is not a terminal, in CI (`CI` set), or with
-`KENNET_NO_UPDATE_NOTIFIER=1`.
+`KENNET_NO_UPDATE_NOTIFIER=1`, and at most once a day.
 
-The release binary updates itself in the background: it downloads the new release for its platform, checks it
-against the release's `checksums.txt` (a mismatch is refused), writes it beside the executable and renames it over
-it, so the next command runs the new version. It never touches a Homebrew or pip install, is off in CI, and
+What install.sh installed updates itself in the background, as Claude Code does. The new version goes in a
+directory of its own, only once its `checksums.txt` carries Metaphi AI's release signature, its archive matches,
+and it answers `--version`; then the `kennet` symlink is flipped to it in one rename. A command already running
+keeps running on its own version, and old versions are removed once nothing runs them (the last two are kept).
+Downloads go to GitHub only. It never touches a Homebrew or pip install, is off in CI, and
 `KENNET_DISABLE_AUTOUPDATE=1` turns it off for a pinned version. A failure says nothing on screen; it is a line in
-`~/.config/metaphi/update.log`. `kennet update` looks and installs now, or prints the command for any other install.
+`~/.config/metaphi/update.log`. `kennet update` looks and installs now, or prints the command for any other
+install; when it cannot, it says why in one line with the next step (`update_unreachable` is worth a retry; a
+signature or checksum refusal is not).
 
 When the service no longer serves your version, every command fails with `upgrade_required` (exit 5), and
 `next_step` is the upgrade command above.
