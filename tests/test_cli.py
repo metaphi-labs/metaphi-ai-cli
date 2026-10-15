@@ -76,6 +76,15 @@ def test_login_with_no_key_handed_over_says_why_and_still_signs_in(monkeypatch, 
 
 
 @respx.mock
+def test_a_login_handed_no_key_drops_only_the_key_a_login_handed(monkeypatch, capsys):
+    config.save({"api_key": "mai_sk_old", "api_key_from": "login", "test_api_key": "mai_sk_test_old", "org": "acme"})
+    assert _login(monkeypatch, no_api_key="Acme has no synthetic twinning access yet; ask Metaphi AI for it") == cli.AUTH
+    capsys.readouterr()
+    cfg = config.load()   # the key the last sign-in handed speaks for what this one was not given: it goes
+    assert cfg["token"] == "tok" and not {"api_key", "api_key_from", "test_api_key", "org"} & set(cfg)
+
+
+@respx.mock
 def test_login_away_from_a_terminal_hands_the_code_over_and_returns(monkeypatch, capsys):
     code = respx.post(f"{A}/device/code").respond(json=CODE)
     token = respx.post(f"{A}/oauth/token").mock(side_effect=[
@@ -255,8 +264,8 @@ def test_whoami_does_not_call_a_key_fine_that_the_twin_service_refuses(capsys):
 
 @respx.mock
 def test_logout_clears_the_token_and_both_keys():
-    config.save({"token": "tok", "email": "alice@example.test", "api_key": "mai_sk_live",
-                 "test_api_key": "mai_sk_test_t"})
+    config.save({"token": "tok", "email": "alice@example.test", "api_key": "mai_sk_live", "api_key_from": "login",
+                 "test_api_key": "mai_sk_test_t", "no_api_key_org": "acme"})
     out = respx.post(f"{A}/logout").respond(json={"revoked": 1})
     assert cli.main(["logout"]) == 0
     assert out.calls[0].request.headers["authorization"] == "Bearer tok" and config.load() == {}
@@ -1178,7 +1187,8 @@ def test_members_commands_act_only_on_organizations_the_person_manages_and_whoam
     assert cli.main(["org", "members", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["org"] == "acme"
     assert cli.main(["org", "members", "--org", "beta"]) == cli.FAILED
-    assert "you manage no organization 'beta'; yours: acme" in capsys.readouterr().err
+    assert capsys.readouterr().err == ("error: only owners and admins of beta see or change its members; you're "
+                                       "a member (code: not_manager)\n")
     respx.get(f"{A}/credits/orgs").respond(json=[])
     respx.get(f"{A}/keys/invitations").respond(json=[])
     respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
@@ -1326,3 +1336,75 @@ def test_the_debug_log_never_holds_a_key(monkeypatch, capsys):
     log = (config.home() / "debug.log").read_text()
     assert "canary" not in log and "consistency" not in log
     assert "--api-key <redacted>" in log and "--key=<redacted>" in log and "mai_sk_<redacted>" in log
+
+
+@respx.mock
+def test_a_login_handed_no_key_drops_the_saved_one_and_whoami_says_the_same_reason(monkeypatch, capsys):
+    """Removed, then login, then whoami: the reason login was given, said again, never back to `kennet login`."""
+    config.save({"token": "old", "email": "bob@acme.test", "org": "acc-test-1015", "api_key": "mai_sk_live_TuyE",
+                 "api_key_from": "login",
+                 "test_api_key": "mai_sk_test_TuyF"})
+    why = "you were removed from Acc Test 1015; ask one of its owners to add you back"
+    pick = respx.post(f"{A}/keys/cli").respond(json={"email": "bob@acme.test", "org": "acc-test-1015",
+                                                     "no_api_key": why, "no_api_key_code": "removed"})
+    assert cli.main(["login"]) == cli.AUTH and pick.call_count == 1
+    capsys.readouterr()
+    cfg = config.load()
+    assert not {"api_key", "test_api_key", "org"} & cfg.keys()
+    assert (cfg["no_api_key_code"], cfg["no_api_key"]) == ("removed", why)
+    respx.get(f"{A}/keys/orgs").respond(json=[])
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/keys/invitations").respond(json=[])
+    twins = respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
+    posted = respx.post(url__regex=r".*").respond(500)
+    assert cli.main(["whoami"]) == cli.AUTH
+    got = capsys.readouterr()
+    assert "kennet login" not in got.out + got.err and "acc-test-1015" not in got.out
+    assert "key:    none" in got.out and "invalid_api_key" not in got.out
+    assert got.err == f"error: no key: {why} (code: no_api_key)\nNext: ask an owner of acc-test-1015 to add you back\n"
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    seen = json.loads(capsys.readouterr().out)
+    assert (seen["reason"], seen["error"]["next_step"], seen["key"]) == ("removed", None, None)
+    assert not posted.called and not twins.called and pick.call_count == 1
+
+
+def test_the_free_test_run_used_names_the_live_run_of_the_same_file(home, monkeypatch, capsys):
+    (home / "t.json").write_text("{}")
+    config.save({"token": "tok", "api_key": "mai_sk_live", "test_api_key": "mai_sk_test_t"})
+    used = {"type": "rate_limit_error", "code": "test_runs_used", "retryable": False,
+            "message": "this organization has used its 1 free test run(s); run it with your live key"}
+    with respx.mock:
+        respx.post(f"{API}/twins").respond(429, json={"error": used})
+        assert cli.main(["twin", "t.json", "--test", "--json"]) == cli.FAILED
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert (error["code"], error["next_step"], error["retryable"]) == ("test_runs_used", "kennet twin t.json",
+                                                                           False)
+        assert error["message"] == "its free test run is used; run it live: kennet twin t.json"
+        assert cli.main(["twin", "t.json", "--test"]) == cli.FAILED
+        assert capsys.readouterr().err.endswith("Next: kennet twin t.json\n")
+        secret = config.KEY_PREFIX + "live_" + "canary1"
+        assert cli.main(["twin", "t.json", "--test", "--json", "--out", "my twins", "--confidential", "Acme Corp",
+                         "--confidential", "Initech", "--no-wait", "--timeout", "90", "--key", "k" * 64,
+                         "--api-key", secret]) == cli.FAILED
+        error = json.loads(capsys.readouterr().out)["error"]   # the same run, live: every flag but the secrets
+        live = "kennet twin t.json --out 'my twins' --confidential 'Acme Corp' --confidential Initech --no-wait " \
+               "--timeout 90"
+        assert error["next_step"] == live and error["message"] == f"its free test run is used; run it live: {live}"
+
+
+@respx.mock
+def test_a_plain_member_asking_for_members_is_told_who_may(capsys):
+    config.save({"token": "tok"})
+    org = {"id": "acme", "name": "Acme", "role": "member", "admission": "admitted", "grants": ["twin"]}
+    listed = respx.get(f"{A}/keys/orgs").respond(json=[org])
+    assert cli.main(["org", "members"]) == cli.FAILED
+    assert capsys.readouterr().err == "error: only owners and admins of acme see or change its members; you're a " \
+                                      "member (code: not_manager)\n"   # no `Next:`: no command clears it
+    listed.respond(json=[{**org, "role": "billing"}])
+    assert cli.main(["org", "members", "--json"]) == cli.FAILED
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["message"] == "only owners and admins of acme see or change its members; you're a billing member"
+    assert error["next_step"] is None
+    listed.respond(json=[])   # in no organization at all: the sentence as before
+    assert cli.main(["org", "members"]) == cli.FAILED
+    assert "owner or admin of no organization" in capsys.readouterr().err

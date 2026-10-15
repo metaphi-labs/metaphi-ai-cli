@@ -24,6 +24,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import sys
 import time
 import traceback
@@ -42,6 +43,8 @@ def status(error: errors.MetaphiError) -> int:
     """The exit status an error ends the command with."""
     if error.code == "upgrade_required":
         return UPGRADE
+    if error.code == "test_runs_used":   # the service calls it a limit; it is spent, and no wait brings it back
+        return FAILED
     if error.type == "auth_error":
         return AUTH
     return LATER if error.retryable or error.type == "rate_limit_error" else FAILED
@@ -116,6 +119,7 @@ def cmd_login(a: argparse.Namespace) -> None:
             raise accounts.Error(f"that is not an organization key ({config.KEY_PREFIX}...)")
         cfg = config.load()
         cfg["api_key"] = key
+        cfg.pop("api_key_from", None)   # saved by hand: a sign-in handed no key never takes it away
         config.save(cfg)
         _out(a, {"keys": True}, "key saved on this machine")
         return
@@ -262,13 +266,35 @@ def cmd_twin(a: argparse.Namespace) -> None:
                     a.confidential, say=say, deadline_s=a.timeout, test=a.test, idempotency_key=key,
                     detach=a.no_wait, out_dir=Path(a.out) if a.out else None)
     try:
-        got = run()
-    except errors.BillingError as e:
-        if e.code != "out_of_credit" or a.json or not _interactive() or not _refill(e):
-            raise
-        got = run()  # once: a second refusal is the error
+        try:
+            got = run()
+        except errors.BillingError as e:
+            if e.code != "out_of_credit" or a.json or not _interactive() or not _refill(e):
+                raise
+            got = run()  # once: a second refusal is the error
+    except errors.MetaphiError as e:
+        if e.code == "test_runs_used":   # the live run of the same file, as it was asked for
+            e.next_step = _live(a)
+            e.message = f"its free test run is used; run it live: {e.next_step}"
+        raise
     if a.json:
         print(json.dumps(got, indent=2))
+
+
+def _live(a: argparse.Namespace) -> str:
+    """`kennet twin` as it was run, live: every flag but --test and the secrets (--api-key, --key), which are never
+    echoed; METAPHI_API_KEY and KENNET_CONSISTENCY_KEY carry those."""
+    words = ["kennet", "twin", a.file]
+    for flag, value in (("-o", a.output), ("--out", a.out), ("--key-file", a.key_file)):
+        if value:
+            words += [flag, value]
+    for name in a.confidential or []:
+        words += ["--confidential", name]
+    if a.no_wait:
+        words.append("--no-wait")
+    if a.timeout:
+        words += ["--timeout", f"{a.timeout:g}"]
+    return shlex.join(words)
 
 
 def _when(at: object) -> str:

@@ -208,7 +208,7 @@ def no_key(cfg: dict[str, Any], again: bool = True, fresh: dict[str, Any] | None
         e.context = {"reason": "invitation_pending", "invitation": invitation}
         return e
     if reason == "removed":
-        org = cfg.get("org") or "your organization"
+        org = cfg.get("no_api_key_org") or cfg.get("org") or "your organization"
         e = accounts.need(f"no key: {why}", "no_api_key", None)
         e.advice = f"ask an owner of {org} to add you back"   # only they can: no command clears it
         e.context = {"reason": reason}
@@ -347,8 +347,14 @@ def twin(trace: Path, out: Path | None = None, api_key: str | None = None, key_h
         form["confidential"] = list(confidential)
     with _client(key) as h:
         body = trace.read_bytes()
-        made = _send(h, "POST", "/twins", sleep, files={"file": (trace.name, body)}, data=form, timeout=UPLOAD,
-                     headers={"idempotency-key": idempotency_key or uuid.uuid4().hex}).json()
+        try:
+            made = _send(h, "POST", "/twins", sleep, files={"file": (trace.name, body)}, data=form, timeout=UPLOAD,
+                         headers={"idempotency-key": idempotency_key or uuid.uuid4().hex}).json()
+        except errors.MetaphiError as e:
+            if e.code == "test_runs_used":   # spent for good: waiting never brings it back; the live run is next
+                e.message = f"its free test run is used; run it live: {again(str(trace))}"
+                e.retryable, e.retry_after_s, e.next_step = False, None, again(str(trace))
+            raise
         say(f"uploaded {trace.name} ({len(body):,} bytes)")
         twin_id = made["id"]
         say(f"twinning ({twin_id})")
