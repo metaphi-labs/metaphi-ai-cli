@@ -2,6 +2,7 @@
 organization's keys, the organizations you manage, and their prepaid credit."""
 from __future__ import annotations
 
+import contextlib
 import time
 import webbrowser
 from collections.abc import Callable
@@ -20,6 +21,7 @@ CLIENT_ID = "metaphi-cli"
 CHECKOUT = "https://checkout.stripe.com/"  # the one place a checkout link may send the browser
 MIN_INTERVAL = 5.0  # RFC 8628 §3.5: the default, and the floor whatever the server says
 ROLES = ("owner", "admin", "billing", "member")   # an organization member's roles, as accounts says them (orgs.ROLES)
+MANAGERS = ("owner", "admin")   # the roles that manage an organization's members
 
 
 class Error(MetaphiError):
@@ -33,11 +35,38 @@ def need(message: str, code: str, next_step: str | None) -> Error:
     return Error(message, code=code, type="auth_error", next_step=next_step)
 
 
+UNAVAILABLE = (502, 503, 504)   # a gateway or proxy in front of accounts, not accounts' own answer
+
+
+def _unanswered(r: httpx.Response) -> Error:
+    """An answer that is not accounts' JSON: a proxy's HTML error page, a captive portal's 200. Its body is never
+    the message. A gateway's 5xx, or a 200 that is not JSON, is `service_unavailable` and worth the same call again."""
+    again = r.status_code in UNAVAILABLE or r.status_code < 400
+    e = Error(f"the service answered HTTP {r.status_code}; try again in a minute",
+              code="service_unavailable" if again else None, type="api_error", retryable=again)
+    e.status = r.status_code
+    held = r.headers.get("retry-after", "").strip()
+    with contextlib.suppress(ValueError):
+        e.retry_after_s = max(0.0, float(held)) if held else None
+    return e
+
+
+def _refused(r: httpx.Response) -> Error:
+    """A refusal: the server's sentence and code when it answered JSON, else `_unanswered`."""
+    try:
+        r.json()
+    except ValueError:
+        return _unanswered(r)
+    e = Error(_said(r), code=_code(r))
+    e.status = r.status_code   # what a command may act on beside the sentence: 503 on an invitation
+    return e
+
+
 def _said(r: httpx.Response) -> str:
     try:
         body = r.json()
     except ValueError:
-        return r.text.strip() or f"HTTP {r.status_code}"
+        return _unanswered(r).message
     if isinstance(body, dict):
         detail = body.get("detail")
         if isinstance(detail, dict) and isinstance(detail.get("message"), str):
@@ -47,12 +76,17 @@ def _said(r: httpx.Response) -> str:
 
 
 def _code(r: httpx.Response) -> str | None:
-    """The code of a coded refusal ({"detail": {"code", "message"}}), else None."""
+    """The code of a coded refusal, at the top level ({"detail": "<sentence>", "code"}) or inside `detail`
+    ({"detail": {"code", "message"}}), else None."""
     try:
-        detail = r.json().get("detail")
-    except (ValueError, AttributeError):
+        body = r.json()
+    except ValueError:
         return None
-    return detail.get("code") if isinstance(detail, dict) and isinstance(detail.get("code"), str) else None
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail")
+    code = detail.get("code") if isinstance(detail, dict) else body.get("code")
+    return code if isinstance(code, str) and code else None
 
 
 def _json(r: httpx.Response) -> dict[str, Any]:
@@ -61,6 +95,8 @@ def _json(r: httpx.Response) -> dict[str, Any]:
         body = r.json()
     except ValueError:
         body = None
+    if body is None:
+        raise _unanswered(r)
     if not isinstance(body, dict):
         raise Error(_said(r))
     return body
@@ -78,7 +114,7 @@ def start() -> dict[str, Any]:
     with _http() as h:
         r = h.post("/device/code", data={"client_id": CLIENT_ID})
     if r.status_code != 200:
-        raise Error(_said(r))
+        raise _refused(r)
     code = _json(r)
     if not all(isinstance(code.get(k), str) and code[k] for k in ("device_code", "user_code", "verification_uri")):
         raise Error("the sign-in server sent an incomplete device code")
@@ -156,7 +192,8 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
 def _keep(body: dict[str, Any], token: str) -> None:
     """Save what the server handed this machine: the token, and the organization's keys or why none came."""
     cfg = config.load()
-    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "step_up"):
+    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "invitation",
+                 "step_up"):
         cfg.pop(name, None)  # the server revoked the keys it handed last; a fresh sign-in is the step-up
     cfg.update({"token": token, "email": body.get("email")})
     if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
@@ -164,20 +201,33 @@ def _keep(body: dict[str, Any], token: str) -> None:
     # why whoami and twin can say, later, what this sign-in was and was not given
     cfg.update({k: body[k] for k in ("org", "no_api_key", "no_api_key_code")
                 if isinstance(body.get(k), str) and body[k]})
+    if (invitation := invited(body)) is not None:   # `invitation_pending`: the organization `kennet org join` accepts
+        cfg["invitation"] = invitation
     config.save(cfg)
+
+
+def invited(body: dict[str, Any]) -> dict[str, Any] | None:
+    """The open invitation an answer carries ({id, org, org_name, role, expires}), when it carries one."""
+    held = body.get("invitation")
+    if not (isinstance(held, dict) and isinstance(held.get("org"), str) and held["org"]):
+        return None
+    return {k: held.get(k) for k in ("id", "org", "org_name", "role", "expires") if held.get(k) is not None}
 
 
 def pickup() -> dict[str, Any] | None:
     """A machine that is signed in asks for its organization's keys again, by the token it holds: what a sign-in
     hands over, with no browser. The organization was made, or approved, after the sign-in, and its keys come
-    here. None when this machine is not signed in or its sign-in has ended: then the person signs in."""
+    here. None when this machine is not signed in or its sign-in has ended (401, 403): then the person signs in.
+    Any other failure is the error, never a reason to start a sign-in afresh."""
     token = config.load().get("token")
     if not token:
         return None
     with _http() as h:
         r = h.post("/keys/cli", headers={"authorization": f"Bearer {token}"})
-    if r.status_code != 200:
+    if r.status_code in (401, 403):
         return None
+    if r.status_code != 200:
+        raise _refused(r)
     body = _json(r)
     _keep(body, token)
     return body
@@ -203,7 +253,7 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
 def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
-    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "pending",
+    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "invitation", "pending",
                  "device_code", "step_up"):
         cfg.pop(name, None)
     config.save(cfg)
@@ -232,10 +282,11 @@ def call(method: str, path: str, **kw: Any) -> Any:
     if r.status_code == 401:
         raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
     if r.status_code >= 400:
-        e = Error(_said(r))
-        e.status = r.status_code   # what a command may act on beside the sentence: 503 on an invitation
-        raise e
-    return r.json()
+        raise _refused(r)   # the server's code, when its refusal carries one
+    try:
+        return r.json()
+    except ValueError:
+        raise _unanswered(r) from None
 
 
 def orgs() -> list[dict[str, Any]]:
@@ -257,10 +308,61 @@ def create_org(name: str) -> dict[str, Any]:
     return made
 
 
+def expired(invitation: dict[str, Any], now: float | None = None) -> bool:
+    at = invitation.get("expires")
+    return isinstance(at, (int, float)) and at <= (time.time() if now is None else now)
+
+
+def invitations() -> list[dict[str, Any]]:
+    """The invitations open to the signed-in person, as accounts lists them now ({id, org, org_name, role,
+    expires}; `id` from accounts that send it)."""
+    got = call("GET", "/keys/invitations")
+    held = [invited({"invitation": {"org_name": i.get("name"), **i}}) for i in got if isinstance(i, dict)]
+    return [i for i in held if i is not None and not expired(i)]
+
+
+def _invitation_org(target: str) -> str:
+    """The organization an invitation is from: `target` itself, or the one the invitation of that id (inv_...) is
+    from, as accounts lists them now; one open invitation listed without ids is that one."""
+    if not target.startswith("inv_"):
+        return target
+    open_ = invitations()
+    for i in open_:
+        if i.get("id") == target:
+            return str(i["org"])
+    if len(open_) == 1 and not open_[0].get("id"):   # an accounts that lists no ids: the one there is
+        return str(open_[0]["org"])
+    raise Error(f"you have no open invitation {target}; `kennet whoami` shows the ones you have",
+                code="no_invitation")
+
+
+def join(target: str) -> dict[str, Any]:
+    """Accept the invitation of the organization named (or of the invitation id given), as the signed-in person:
+    they join it in the role it named. The keys come after, by `pickup`."""
+    target = target.strip()
+    org_id = _invitation_org(target)
+    try:   # an invitation named by its id says which one; by the organization, the one open to this address
+        got = call("POST", f"/keys/invitations/{quote(org_id, safe='')}",
+                   **({"json": {"id": target}} if target.startswith("inv_") else {}))
+    except Error as e:
+        if e.code == "invitation_for_another_address":   # sent to another address than this sign-in's
+            e.next_step = "kennet logout"
+            e.advice = "run `kennet logout`, then `kennet login` as the address the invitation was sent to"
+            raise
+        if getattr(e, "status", None) != 404:
+            raise
+        e = Error(f"{e.message}; it may have expired or been taken back", code="no_invitation")
+        e.advice = f"ask an owner of {org_id} to invite you again"
+        raise e from None
+    if not isinstance(got, dict):
+        raise Error("the server sent no membership")
+    return {"org": str(got.get("org") or org_id), "role": got.get("role")}
+
+
 def managed(name: str | None) -> dict[str, Any]:
     """The organization a members command acts on: the one named, or the only one the person manages (owner or
-    admin)."""
-    mine = orgs()
+    admin). Accounts lists every organization the person is in; only those they manage are theirs to act on."""
+    mine = [o for o in orgs() if o.get("role") in MANAGERS]
     if name:
         for o in mine:
             if o["id"] == name:

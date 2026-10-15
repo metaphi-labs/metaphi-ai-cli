@@ -126,6 +126,16 @@ def test_426_is_upgrade_required_in_the_clis_own_words(capsys):
     err = capsys.readouterr().err
     assert "anything the server says" not in err and "Traceback" not in err
     assert err.splitlines()[-1] == f"Next: {update.upgrade_command()}"
+    # the shape servers send now: a top-level code and a sentence as `detail`; the CLI's sentence all the same
+    respx.get(f"{A}/keys/orgs").respond(426, json={"detail": "kennet is too old; upgrade it",
+                                                   "code": "upgrade_required", "min_version": "0.3.0"})
+    assert cli.main(["org", "members", "--json"]) == cli.UPGRADE
+    got = json.loads(capsys.readouterr().out)["error"]
+    assert got["message"] == f"kennet {__version__} is too old for this service; it needs 0.3.0 or later"
+    assert (got["code"], got["next_step"]) == ("upgrade_required", update.upgrade_command())
+    respx.get(f"{A}/keys/orgs").respond(426, text="upgrade")   # no JSON at all: still the CLI's sentence
+    assert cli.main(["org", "members", "--json"]) == cli.UPGRADE
+    assert json.loads(capsys.readouterr().out)["error"]["message"] == f"kennet {__version__} is too old for this service"
 
 
 def test_accounts_requests_carry_the_floor_hook():

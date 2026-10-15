@@ -146,15 +146,19 @@ class UpgradeRequired(errors.MetaphiError):
 
 def floor(r: httpx.Response) -> None:
     """An httpx response hook: a 426 is the server's version floor. The sentence is the CLI's own, from
-    `min_version` and this install's upgrade command; the server's is not shown."""
+    `min_version` and this install's upgrade command; the server's is not shown. `min_version` is read at the top
+    level ({"detail": "<sentence>", "code", "min_version"}) or inside `detail` ({"detail": {"code", "min_version",
+    "message"}}), the shape servers before it sent."""
     if r.status_code != 426:
         return
     r.read()
     try:
-        detail = r.json().get("detail")
-    except (ValueError, AttributeError):
-        detail = None
-    least = detail.get("min_version") if isinstance(detail, dict) else None
+        body = r.json()
+    except ValueError:
+        body = None
+    body = body if isinstance(body, dict) else {}
+    detail = body.get("detail")
+    least = body.get("min_version") or (detail.get("min_version") if isinstance(detail, dict) else None)
     least = least if _version(least) else None
     raise UpgradeRequired(f"kennet {__version__} is too old for this service"
                           + (f"; it needs {least} or later" if least else ""),

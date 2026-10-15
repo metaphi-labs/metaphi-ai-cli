@@ -101,8 +101,10 @@ def test_a_non_json_poll_answer_is_an_error():
     respx.post(f"{A}/device/code").respond(json={"device_code": "dc", "user_code": "U", "interval": 1,
                                                  "expires_in": 60, "verification_uri": f"{A}/device"})
     respx.post(f"{A}/oauth/token").mock(return_value=httpx.Response(502, text="bad gateway"))
-    with pytest.raises(accounts.Error, match="bad gateway"):
+    with pytest.raises(accounts.Error) as e:   # the proxy's page is never the message
         accounts.login(say=lambda s: None, open_browser=False, sleep=lambda s: None)
+    assert (e.value.message, e.value.code, e.value.retryable) == (
+        "the service answered HTTP 502; try again in a minute", "service_unavailable", True)
 
 
 def _sign_in(code_body, monkeypatch):
