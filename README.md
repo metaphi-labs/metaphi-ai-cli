@@ -14,6 +14,30 @@ No Homebrew? Download the binary for your platform from the
 
 Calling it from Python instead: `pip install metaphi-ai` gives you the same command and the library (see below).
 
+### Staying current
+
+`kennet --version` prints the version. Once a day `kennet` looks at the releases, on a thread that never holds a
+command up, and when a newer one is out says so on stderr after the command's output, with the upgrade command for
+how this copy was installed:
+
+| Installed with | Upgrade |
+| --- | --- |
+| Homebrew | `brew upgrade metaphi-labs/tap/kennet` |
+| `pip`, `pipx`, `uv tool` | `pip install -U metaphi-ai`, `pipx upgrade metaphi-ai`, `uv tool upgrade metaphi-ai` |
+| the release binary | nothing: it updates itself (below), or `kennet update` now |
+
+The notice is never shown under `--json`, when stderr is not a terminal, in CI (`CI` set), or with
+`KENNET_NO_UPDATE_NOTIFIER=1`.
+
+The release binary updates itself in the background: it downloads the new release for its platform, checks it
+against the release's `checksums.txt` (a mismatch is refused), writes it beside the executable and renames it over
+it, so the next command runs the new version. It never touches a Homebrew or pip install, is off in CI, and
+`KENNET_DISABLE_AUTOUPDATE=1` turns it off for a pinned version. A failure says nothing on screen; it is a line in
+`~/.config/metaphi/update.log`. `kennet update` looks and installs now, or prints the command for any other install.
+
+When the service no longer serves your version, every command fails with `upgrade_required` (exit 5), and
+`next_step` is the upgrade command above.
+
 ## Quickstart (2 minutes)
 
 ```sh
@@ -132,6 +156,7 @@ The exit status says what kind of end it was:
 | 2 | The command line was wrong. |
 | 3 | A sign-in or a key is needed (`auth_error`). |
 | 4 | The same call may work later: the service is unavailable, a limit is reached, or a wait ran out. |
+| 5 | This version is too old for the service (`upgrade_required`); `next_step` upgrades it. |
 
 A request that fails in transit or with a retryable error is sent again at most twice, within 5 seconds in all;
 a longer `Retry-After` is handed back as `retry_after_s`, not waited out.
@@ -176,6 +201,7 @@ but for the last:
 | `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org create <name>` when you are in no organization; `null` while yours waits for approval, and from `login` itself; else `kennet login` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
+| `upgrade_required` (`upgrade_error`) | the service no longer serves this version (exit 5) | the upgrade command for this install |
 | `step_up_required` | a change to the organization's members needs a sign-in more recent than this one | `kennet login` (signs in afresh) |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
 
@@ -279,6 +305,8 @@ sent one.
 | `METAPHI_HOME` | `~/.config/metaphi` (directory mode 700, config file mode 600) |
 | `METAPHI_TWIN_TIMEOUT` | `7200`: seconds `kennet twin` waits for its twin to end (`--timeout` per call) |
 | `METAPHI_ALLOW_CUSTOM_HOST` | unset: the CLI talks only to `https://*.metaphi.ai`; `1` allows another https host |
+| `KENNET_NO_UPDATE_NOTIFIER` | unset: `1` turns the daily new-release notice off |
+| `KENNET_DISABLE_AUTOUPDATE` | unset: `1` stops the release binary from updating itself |
 
 Sign out with `kennet logout`. It ends this sign-in everywhere it is used, revokes the keys `kennet login`
 handed out, and clears the saved keys from this machine.

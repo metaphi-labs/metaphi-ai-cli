@@ -6,6 +6,8 @@
     METAPHI_API                the twin API (default https://api.metaphi.ai/v1/kennet)
     METAPHI_ALLOW_CUSTOM_HOST  1 lets the two above, and the file links they hand out, leave metaphi.ai
     METAPHI_TWIN_TIMEOUT       seconds `kennet twin` waits for a twin to end (default 7200)
+    KENNET_NO_UPDATE_NOTIFIER  1 turns the daily new-release notice off (metaphi/update.py)
+    KENNET_DISABLE_AUTOUPDATE  1 stops the release binary from updating itself
 
 Everything, the saved keys and the sign-in token with it, is in the config file, in a directory only its owner can
 enter, written atomically with mode 600: where `gh`, `gcloud`, `aws` and `stripe` keep theirs. No OS keychain: it

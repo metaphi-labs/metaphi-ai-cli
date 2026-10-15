@@ -101,8 +101,9 @@ UPLOAD = httpx.Timeout(30.0, connect=5.0, read=600.0, write=600.0)   # a file's 
 
 
 def _client(key: str) -> httpx.Client:
+    from metaphi.update import floor
     return httpx.Client(base_url=config.api_url(), timeout=httpx.Timeout(30.0, connect=5.0),
-                        headers={"authorization": f"Bearer {key}", "metaphi-version": API_VERSION,
+                        event_hooks={"response": [floor]}, headers={"authorization": f"Bearer {key}", "metaphi-version": API_VERSION,
                                  "user-agent": f"metaphi-cli/{__import__('metaphi').__version__}"})
 
 

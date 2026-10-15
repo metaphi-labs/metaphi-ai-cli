@@ -10,7 +10,8 @@ the result (or the error object) alone on stdout while progress goes to stderr, 
 clears names that command (`Next: ...`, `next_step` in JSON).
 
 Exit status: 0 done; 1 failed; 2 the command line was wrong; 3 a sign-in or a key is needed (`AUTH`); 4 the same
-call may work later (`LATER`: the service is unavailable, rate limited, or a wait ran out).
+call may work later (`LATER`: the service is unavailable, rate limited, or a wait ran out); 5 this version is too old
+for the service (`UPGRADE`: `upgrade_required`, and `next_step` is the upgrade command for this install).
 """
 from __future__ import annotations
 
@@ -25,13 +26,15 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from metaphi import __version__, accounts, config, errors, skill
+from metaphi import __version__, accounts, config, errors, skill, update
 
-FAILED, USAGE, AUTH, LATER = 1, 2, 3, 4
+FAILED, USAGE, AUTH, LATER, UPGRADE = 1, 2, 3, 4, 5
 
 
 def status(error: errors.MetaphiError) -> int:
     """The exit status an error ends the command with."""
+    if error.code == "upgrade_required":
+        return UPGRADE
     if error.type == "auth_error":
         return AUTH
     return LATER if error.retryable or error.type == "rate_limit_error" else FAILED
@@ -520,6 +523,17 @@ def cmd_credits_buy(a: argparse.Namespace) -> None:
     _buy(o, a.amount, open_browser=not a.no_browser)
 
 
+def cmd_update(a: argparse.Namespace) -> None:
+    got = update.now()
+    if got["updated"]:
+        said = f"kennet {got['latest']} is installed; it runs from the next command."
+    elif got.get("next_step"):
+        said = f"kennet {got['latest']} is out (you have {got['version']}). Upgrade: {got['next_step']}"
+    else:
+        said = f"kennet {got['version']} is the newest."
+    _out(a, got, said)
+
+
 def cmd_skill_install(a: argparse.Namespace) -> None:
     path = skill.install(a.project, a.force)
     _out(a, {"path": str(path), "next_step": "kennet skill show"},
@@ -555,7 +569,7 @@ from an agent or a script (no terminal): add --json; stdout is then the result o
   kennet login --complete           waits for the approval, saves the keys
   METAPHI_API_KEY=mai_sk_... kennet twin trace.json --json    no sign-in: a key from the console
 
-exit status: 0 done, 1 failed, 2 usage, 3 sign-in or key needed, 4 try the same call later
+exit status: 0 done, 1 failed, 2 usage, 3 sign-in or key needed, 4 try the same call later, 5 upgrade kennet
 """
 
 
@@ -742,6 +756,11 @@ def parser() -> argparse.ArgumentParser:
     _json_flag(v)
     v.set_defaults(fn=cmd_skill_remove)
 
+    s = sub.add_parser("update", help="install the newest release now (the release binary), or print the command "
+                       "that upgrades this install")
+    _json_flag(s)
+    s.set_defaults(fn=cmd_update)
+
     sub.add_parser("help", help="this help").set_defaults(fn=lambda a: p.print_help())
     return p
 
@@ -750,8 +769,19 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):  # a line is read when it is said, also down a pipe
         with contextlib.suppress(Exception):
             stream.reconfigure(line_buffering=True)
+    if (sys.argv[1:] if argv is None else argv) == [update.WORKER]:   # the detached self-update
+        return update.worker()
     p = parser()
     a = p.parse_args(argv)
+    notifier = None if a.command in (None, "update") else update.Notifier(getattr(a, "json", False))
+    try:
+        return _run(p, a)
+    finally:
+        if notifier is not None:
+            notifier.done()
+
+
+def _run(p: argparse.ArgumentParser, a: argparse.Namespace) -> int:
     try:
         if a.command is None:  # bare `kennet`: the help, and the one next step
             p.print_help()

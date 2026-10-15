@@ -56,6 +56,7 @@ their data goes.
   | 2 | The command line was wrong (no JSON is printed). |
   | 3 | A sign-in or a key is needed. `error.next_step` is the command, or null when only the user can clear it. |
   | 4 | The same call may work later: the service is unavailable, a limit is reached, or a wait ran out. |
+  | 5 | This version of `kennet` is too old for the service (`upgrade_required`). |
 
 - On an error, read `error.code` and find it in the table in step 4. `error.next_step` is always there: the next
   command to run (add `--json` to it), or null when no command clears it. `error.retry_after_s`, when there, is
@@ -68,6 +69,9 @@ their data goes.
   to 2 MiB. Spend it on a representative file, and ask the user which one before you do. Once it is used the
   refusal is `test_runs_used`: runs from then on are live. A live run draws the organization's prepaid credit:
   ask the user before the first one, even after a good test run.
+- `kennet` says nothing about new releases under `--json`, and the release binary updates itself in the background
+  (`KENNET_DISABLE_AUTOUPDATE=1` stops it). `kennet update --json` answers `version`, `latest`, `method` and
+  `next_step`, the upgrade command, when this install is not the newest.
 - When a step needs the user and they are not there, stop and hand back what they have to do. Do not work around it.
 - When something fails that you cannot clear, quote `error.request_id` to the user, or `error.run_id` (the twin's
   id) for a run that failed.
@@ -168,6 +172,7 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 
 | `error.code` | What to do |
 | --- | --- |
+| `upgrade_required` | This `kennet` is too old for the service. `next_step` is the upgrade command for how it was installed (`brew upgrade ...`, `pip install -U ...`, or `kennet update`): ask the user, run it, then the same command again. |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
 | `step_up_required` | A change to the organization needs a recent sign-in. Step 2, from its start, then the same command once more. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |

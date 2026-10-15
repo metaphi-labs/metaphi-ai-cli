@@ -67,7 +67,8 @@ def _json(r: httpx.Response) -> dict[str, Any]:
 
 
 def _http() -> httpx.Client:
-    return httpx.Client(base_url=config.accounts_url(), timeout=30.0,
+    from metaphi.update import floor
+    return httpx.Client(base_url=config.accounts_url(), timeout=30.0, event_hooks={"response": [floor]},
                         headers={"user-agent": f"metaphi-cli/{__import__('metaphi').__version__}"})
 
 
