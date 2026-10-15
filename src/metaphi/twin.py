@@ -185,20 +185,26 @@ REASONS = ("no_organization", "awaiting_approval", "no_access", "service_account
            "invitation_pending", "removed")
 
 
-def no_key(cfg: dict[str, Any], again: bool = True) -> accounts.Error:
+def no_key(cfg: dict[str, Any], again: bool = True, fresh: dict[str, Any] | None = None) -> accounts.Error:
     """Signed in, and no key came with the sign-in. `kennet login` picks the keys up once the organization has
     access, by the token this machine holds and with no browser; `again` is False where that was just run. A
     person in no organization makes theirs first; one an organization has invited joins it (`kennet org join`),
-    and is never told to make one; one taken out of theirs is told who can add them back."""
+    and is never told to make one; one taken out of theirs is told who can add them back.
+
+    `fresh` is an invitation accounts named just now (a sign-in's answer, `whoami`'s listing): joining it is the
+    next step. One the last sign-in saved may be stale, so it is named only until it expires, and the next step
+    is `kennet login`, which asks again."""
     why = str(cfg.get("no_api_key") or "your organization has no key for this machine yet").rstrip(".")
     reason = cfg.get("no_api_key_code")
-    invitation = accounts.invited(cfg)
+    cached = accounts.invited(cfg)
+    invitation = fresh if fresh is not None else (cached if cached and not accounts.expired(cached) else None)
     if invitation is not None and reason in (None, "no_organization", "invitation_pending"):
         # an invitation waits: joining is the one thing to do, whatever else the sign-in said
         org = invitation["org"]
-        if reason != "invitation_pending":
+        if reason != "invitation_pending" or fresh is not None and cached and cached.get("org") != org:
             why = f"{invitation.get('org_name') or org} has invited you to join it"
-        e = accounts.need(f"no key: {why}", "no_api_key", f"kennet org join {org}")
+        step = f"kennet org join {org}" if fresh is not None else ("kennet login" if again else None)
+        e = accounts.need(f"no key: {why}", "no_api_key", step)
         e.context = {"reason": "invitation_pending", "invitation": invitation}
         return e
     if reason == "removed":

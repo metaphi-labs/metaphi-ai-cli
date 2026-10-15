@@ -7,7 +7,7 @@ or `rate_limited_concurrent`; `request_id` is what support looks the call up by.
 its own code where there is one thing to do about it (`not_signed_in`, `no_api_key`, `login_expired`) and that thing
 as `next_step`, a command to run; one a server answers without a code is a plain `MetaphiError` with `code` None.
 `next_step` is in every error object, null when no command clears it; `retry_after_s` is how long the service
-said to wait, when it said."""
+said to wait, when it said; `advice`, when there, is what the person does that no one command does."""
 from __future__ import annotations
 
 from typing import Any
@@ -34,6 +34,7 @@ class MetaphiError(config.Error):
         self.next_step = next_step   # the command that clears it, when the CLI knows one
         self.retry_after_s = retry_after_s   # seconds the service said to wait before the same call
         self.context: dict[str, Any] = {}    # what the command knew when it failed, beside `error` under --json
+        self.advice: str | None = None       # what the person does when no command alone clears it
 
     def to_dict(self) -> dict[str, Any]:
         """The error object, as the service said it."""
@@ -43,6 +44,8 @@ class MetaphiError(config.Error):
                                       ("action_url", self.action_url)) if v})
         if self.retry_after_s is not None:
             out["retry_after_s"] = self.retry_after_s
+        if self.advice:
+            out["advice"] = self.advice
         return out
 
     def __str__(self) -> str:

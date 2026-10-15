@@ -23,6 +23,7 @@ import contextlib
 import getpass
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -75,7 +76,8 @@ def _progress(a: argparse.Namespace):
 def _invitation_line(i: dict) -> str:
     return (f"{i.get('org_name') or i['org']} has invited you to join it"
             + (f" as {i['role']}" if i.get("role") else "") + (f", until {_when(i['expires'])}" if i.get("expires")
-                                                               else "") + ".")
+                                                               else "") + "."
+            + (f" ({i['id']})" if i.get("id") else ""))
 
 
 def _signed_in(a: argparse.Namespace, got: dict, joined: dict | None = None) -> None:
@@ -92,7 +94,7 @@ def _signed_in(a: argparse.Namespace, got: dict, joined: dict | None = None) -> 
     # signed in, and handed no key: the same refusal `whoami` and `twin` make, with nothing here left to run
     why = got.get("no_api_key") or "the server sent none"
     from metaphi.twin import no_key
-    e = no_key({**got, "no_api_key": why}, again=False)
+    e = no_key({**got, "no_api_key": why}, again=False, fresh=accounts.invited(got))
     reason = e.context.get("reason")
     if not a.json:
         lines = [said, f"Signed in as {got.get('email')}."]
@@ -164,15 +166,14 @@ def _key_status(key: str | None, source: str) -> tuple[dict | None, errors.Metap
     return {"source": source, "hint": _hint(key), "status": "ok" if e is None else e.code or "error"}, e
 
 
-def _invitation(cfg: dict) -> dict | None:
-    """The invitation waiting for the signed-in person: the one the last sign-in named, else one sent since."""
-    if (held := accounts.invited(cfg)) is not None:
-        return held
-    with contextlib.suppress(config.Error):
-        for i in accounts.call("GET", "/keys/invitations"):
-            if isinstance(i, dict) and (held := accounts.invited({"invitation": {"org_name": i.get("name"), **i}})):
-                return held
-    return None
+def _invitations(cfg: dict, orgs: list) -> list[dict]:
+    """The invitations open to the signed-in person, as accounts lists them now. Only when it cannot say does the
+    one the last sign-in saved stand in, while it has not expired and the person is in no organization."""
+    try:
+        return accounts.invitations()
+    except config.Error:
+        held = accounts.invited(cfg)
+        return [held] if held and not accounts.expired(held) and not orgs else []
 
 
 def cmd_whoami(a: argparse.Namespace) -> None:
@@ -193,9 +194,10 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                 credit = {o["id"]: o for o in accounts.org_credits()}
         (live, refused), (test, _) = asked[0].result(), asked[1].result()
     gone = refused is not None and refused.code in ("invalid_api_key", "missing_api_key")
-    invitation = _invitation(cfg) if cfg.get("token") and (live is None or refused is not None) else None
+    invitations = _invitations(cfg, orgs) if cfg.get("token") else []
+    invitation = invitations[0] if invitations and (live is None or refused is not None) else None
+    cfg = {k: v for k, v in cfg.items() if k != "invitation"}   # what accounts says now, never the saved one
     if invitation is not None:
-        cfg = {**cfg, "invitation": invitation}
         if gone:
             live, refused = None, None   # the key is spent for good; what clears it is the invitation
     elif gone and cfg.get("token") and not env:
@@ -211,7 +213,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                               **({"credits_usd": credit[o["id"]]["credits_usd"],
                                   "can_buy": bool(credit[o["id"]].get("can_buy"))} if o["id"] in credit else {})}
                              for o in orgs],
-           "key": live, "test_key": test, **({"invitation": invitation} if invitation else {})}
+           "key": live, "test_key": test, **({"invitations": invitations} if invitations else {})}
     lines = [f"person: {got['email'] or 'not signed in (a saved key only)'}"]
     if got["org"] and got["org"] not in [o["id"] for o in got["organizations"]]:
         lines.append(f"org:    {got['org']}")
@@ -221,8 +223,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
                      + ("waits for Metaphi AI to approve it" if waits else
                         f"holds {', '.join(o['grants']) or 'nothing yet'}")
                      + (f"; ${o['credits_usd']:,.2f} prepaid credit" if "credits_usd" in o else ""))
-    if invitation:
-        lines.append(f"invite: {_invitation_line(invitation)}")
+    lines += [f"invite: {_invitation_line(i)}" for i in invitations]
     said = {"ok": "works"}
     lines.append(f"key:    {live['hint']} ({live['source']}): {said.get(live['status'], live['status'])}" if live else
                  "key:    none" + ("" if invitation or cfg.get("no_api_key_code") == "removed" else
@@ -235,7 +236,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     if not a.json:
         print("\n".join(lines))
     from metaphi.twin import no_key
-    error = refused or no_key(cfg)
+    error = refused or no_key(cfg, fresh=invitation)
     error.context = {**error.context, **got}
     raise error
 
@@ -888,11 +889,14 @@ def _run(p: argparse.ArgumentParser, a: argparse.Namespace) -> int:
             print(advice or f"Add credit: {error.action_url}  or run: kennet credits buy --amount <amount>",
                   file=sys.stderr)
         elif error.next_step or advice:
-            print(f"Next: {error.next_step or advice}", file=sys.stderr)
+            print(f"Next: {advice or error.next_step}", file=sys.stderr)
         elif error.retry_after_s is not None:
             print(f"Try again in {error.retry_after_s:.0f}s.", file=sys.stderr)
         return status(error)
     except KeyboardInterrupt:
+        if getattr(a, "json", False):   # stdout is still one JSON object: the stop, said as an error
+            stopped = errors.MetaphiError("interrupted", code="interrupted")
+            print(json.dumps({"error": stopped.to_dict()}, indent=2))
         return 130
     except httpx.TransportError as e:   # the network, not the service: the same command may work in a moment
         return _said(a, network(e), "Next: check your connection, then run the same command again.")
@@ -926,12 +930,31 @@ def _bug(e: BaseException) -> errors.MetaphiError:
     with contextlib.suppress(OSError):
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with open(path, "a") as f:
-            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} kennet {__version__} {' '.join(sys.argv[1:])}\n"
-                    + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            f.write(_redacted(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} kennet {__version__} "
+                              f"{' '.join(_unsecret(sys.argv[1:]))}\n"
+                              + "".join(traceback.format_exception(type(e), e, e.__traceback__))))
     error = errors.MetaphiError(f"kennet stopped on something it did not expect ({type(e).__name__})",
                                 code="internal", type="api_error")
     error.context = {"debug_log": str(path)}
     return error
+
+
+SECRET_FLAGS = ("--api-key", "--key")   # their values are keys: never written down
+
+
+def _unsecret(argv: list[str]) -> list[str]:
+    """The command line with every secret flag's value replaced."""
+    out, hide = [], False
+    for word in argv:
+        flag = word.split("=", 1)[0]
+        out.append("<redacted>" if hide else f"{flag}=<redacted>" if flag in SECRET_FLAGS and "=" in word else word)
+        hide = word in SECRET_FLAGS
+    return out
+
+
+def _redacted(text: str) -> str:
+    """Any organization key in `text` replaced."""
+    return re.sub(rf"{re.escape(config.KEY_PREFIX)}[A-Za-z0-9_\-]*", f"{config.KEY_PREFIX}<redacted>", text)
 
 
 def _said(a: argparse.Namespace, error: errors.MetaphiError, then: str) -> int:

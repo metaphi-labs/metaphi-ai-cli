@@ -226,6 +226,8 @@ but for the last:
 | `no_invitation` | `kennet org join` found no open invitation from that organization: it expired or was taken back | `null` |
 | `invitation_for_another_address` | the invitation `kennet org join` names was sent to another address than the one signed in: `kennet logout`, then `kennet login` as that address | `null` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
+| `service_unavailable` (`api_error`) | a gateway or proxy answered for accounts (an HTML 502, a captive portal): `the service answered HTTP <status>; try again in a minute` (`retryable`, exit 4, `retry_after_s` when sent) | `null` |
+| `interrupted` | Ctrl-C or a signal stopped the command (exit 130; under `--json` the error object says so) | `null` |
 | `network` (`api_error`) | no answer from a server at all: the message names the host and why (`retryable`, exit 4) | `null` |
 | `internal` (`api_error`) | something the CLI did not expect; `debug_log` beside the error is the file to report it with | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |

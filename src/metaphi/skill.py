@@ -62,7 +62,8 @@ their data goes.
   | 5 | This version of `kennet` is too old for the service (`upgrade_required`). |
 
 - On an error, read `error.code` and find it in the table in step 4. `error.next_step` is always there: the next
-  command to run (add `--json` to it), or null when no command clears it. `error.retry_after_s`, when there, is
+  command to run (add `--json` to it), or null when no command clears it. `error.advice`, when there, is what
+  the user does that one command does not (sign in as another address, ask an owner): tell them. `error.retry_after_s`, when there, is
   how long the service said to wait before the same call. Never decide from the message text.
 - A command retries a failed request for at most 5 seconds by itself. Past that it returns the error, so a
   command that fails does so quickly; waiting longer is yours to do.
@@ -109,7 +110,8 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
   Any other `reason`, or none: run `kennet login --json` once (a signed-in machine opens no browser); if it ends in
   `no_api_key` again, tell the user the message as it is, and stop.
 - Any other `error.code`: the table in step 4. `email`, `org` and `organizations` are beside `error`.
-- `invitation`, when there, is an invitation waiting for the user: `kennet org join <org> --json` accepts it.
+- `invitations`, when there, are the invitations waiting for the user, as accounts lists them now, each with its
+  `id` when accounts sends one: `kennet org join <org> --json` (or the `id`) accepts one.
 - When the saved key is refused, `whoami` reads why without changing any key: an invitation waiting is
   `kennet org join <org>`; otherwise the message says whether the key was replaced by a sign-in elsewhere or the
   user is in no organization, and `next_step` is `kennet login`, which says the rest.
@@ -207,6 +209,8 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 | `error.code` | What to do |
 | --- | --- |
 | `network` | This machine could not reach the service (`retryable`; the message names the host and why). Nothing was changed. Wait a few seconds, run the same command once more, then tell the user to check their connection. |
+| `service_unavailable` | Something in front of the service (a gateway, a proxy, a captive portal) answered instead of it (`retryable`). Nothing was changed. Wait `retry_after_s` (30 seconds when absent), run the same command once more, then tell the user. |
+| `interrupted` | The command was stopped (Ctrl-C, or the process was signalled) before it ended; exit 130. Run it again if it should finish. |
 | `internal` | `kennet` stopped on something it did not expect: a bug. Do not retry in a loop. Tell the user, with `kennet --version` and the `debug_log` path beside `error`, so it can be reported. |
 | `upgrade_required` | This `kennet` is too old for the service. `next_step` is the upgrade command for how it was installed (`brew upgrade ...`, `pip install -U ...`, `kennet update`, or the install.sh line): ask the user, run it, then the same command again. |
 | `update_unreachable` | `kennet update` could not reach GitHub (`retryable`). Try once more later; nothing changed. |
@@ -307,8 +311,8 @@ kennet org join acme --json        # or the invitation's id: kennet org join inv
 It accepts the invitation, signed in as the address it was sent to, and saves the organization's keys:
 `{{"email", "org", "keys": true, "joined": {{"org", "role"}}, "next_step"}}`. Ask the user first: a person is in one
 organization. `error.code` `no_invitation`: there is no open invitation from it (expired or taken back); tell the
-user to ask an owner of it for a new one. `invitation_for_another_address`: the invitation was mailed to another address than the one signed in; the
-user runs `kennet logout`, then step 2 signed in as that address. `step_up_required`: as below. `no_api_key` after
+user to ask an owner of it for a new one. `invitation_for_another_address`: the invitation was mailed to another address than the one signed in;
+`next_step` is `kennet logout`, then step 2 signed in as that address (`advice`). `step_up_required`: as below. `no_api_key` after
 joining: step 1's table.
 
 Owners and admins manage who is in the organization. Ask the user before every change: whom, and in which role.

@@ -124,6 +124,7 @@ def test_whoami_asks_the_server_and_says_the_org_the_balance_and_the_key(monkeyp
     checked = respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
     orgs = respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["twin"]}])
     respx.get(f"{A}/credits/orgs").respond(json=[{"id": "acme", "credits_usd": 12.5, "can_buy": True}])
+    respx.get(f"{A}/keys/invitations").respond(json=[])
     assert cli.main(["whoami", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "email": "alice@example.test", "org": "acme",
@@ -1008,16 +1009,26 @@ def test_org_join_accepts_the_invitation_by_bearer_then_picks_the_keys_up(monkey
     assert accept.calls[0].request.headers["authorization"] == "Bearer tok" and pick.call_count == 1
     cfg = config.load()
     assert cfg["api_key"] == "mai_sk_live" and "invitation" not in cfg
-    # by the invitation's id: the one the last sign-in named, else the one accounts lists
-    config.save({**cfg, "invitation": INVITED["invitation"]})
+    # by the invitation's id, as accounts lists it now; a saved invitation is never what decides
+    listed = respx.get(f"{A}/keys/invitations").respond(json=[
+        {"id": "inv_9", "org": "acme", "name": "Acme Robotics", "role": "member"},
+        {"id": "inv_7", "org": "beta", "name": "Beta", "role": "admin"}])
+    config.save({**cfg, "invitation": {**INVITED["invitation"], "id": "inv_7"}})
     assert cli.main(["org", "join", "inv_9", "--json"]) == 0
     got = json.loads(capsys.readouterr().out)
     assert (got["keys"], got["joined"]) == (True, {"org": "acme", "role": "member"})
-    respx.get(f"{A}/keys/invitations").respond(json=[{"id": "inv_7", "org": "beta", "name": "Beta", "role": "admin"}])
+    assert json.loads(accept.calls[-1].request.content) == {"id": "inv_9"}
     beta = respx.post(f"{A}/keys/invitations/beta").respond(json={"org": "beta", "role": "admin"})
     assert cli.main(["org", "join", "inv_7", "--json"]) == 0 and beta.call_count == 1
     capsys.readouterr()
     assert cli.main(["org", "join", "inv_0", "--json"]) == cli.FAILED
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "no_invitation"
+    # an accounts that lists no ids: the one invitation open is the one meant; two are not guessed between
+    listed.respond(json=[{"org": "beta", "name": "Beta", "role": "admin"}])
+    assert cli.main(["org", "join", "inv_7", "--json"]) == 0 and beta.call_count == 2
+    capsys.readouterr()
+    listed.respond(json=[{"org": "beta", "name": "Beta"}, {"org": "acme", "name": "Acme"}])
+    assert cli.main(["org", "join", "inv_7", "--json"]) == cli.FAILED
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "no_invitation"
     # gone: expired or taken back; who can send a new one
     accept.respond(404, json={"detail": "no invitation from acme for bob@gmail.test"})
@@ -1169,6 +1180,7 @@ def test_members_commands_act_only_on_organizations_the_person_manages_and_whoam
     assert cli.main(["org", "members", "--org", "beta"]) == cli.FAILED
     assert "you manage no organization 'beta'; yours: acme" in capsys.readouterr().err
     respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/keys/invitations").respond(json=[])
     respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
     assert cli.main(["whoami"]) == 0
     assert "org:    beta (member) holds twin" in capsys.readouterr().out
@@ -1176,13 +1188,141 @@ def test_members_commands_act_only_on_organizations_the_person_manages_and_whoam
 
 @respx.mock
 def test_org_join_by_id_names_the_invitation_and_another_address_is_told_to_sign_in_as_it(capsys):
-    config.save({"token": "tok", "email": "bob@gmail.test", "invitation": INVITED["invitation"]})
+    config.save({"token": "tok", "email": "bob@gmail.test"})
+    respx.get(f"{A}/keys/invitations").respond(json=[{"id": "inv_9", "org": "acme", "name": "Acme"}])
     accept = respx.post(f"{A}/keys/invitations/acme").respond(403, json={"detail": {
         "code": "invitation_for_another_address", "message": "this invitation was sent to bob@acme.test"}})
     assert cli.main(["org", "join", "inv_9"]) == cli.FAILED
     assert json.loads(accept.calls[0].request.content) == {"id": "inv_9"}
+    then = "run `kennet logout`, then `kennet login` as the address the invitation was sent to"
     assert capsys.readouterr().err == (
         "error: this invitation was sent to bob@acme.test (code: invitation_for_another_address)\n"
-        "Next: run `kennet logout`, then `kennet login` as the address the invitation was sent to\n")
+        f"Next: {then}\n")
+    assert cli.main(["org", "join", "inv_9", "--json"]) == cli.FAILED   # the same next step under --json
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["next_step"], error["advice"]) == ("kennet logout", then)
     assert cli.main(["org", "join", "acme"]) == cli.FAILED
-    assert accept.calls[1].request.content == b""   # by the organization: the invitation open to this address
+    assert accept.calls[-1].request.content == b""   # by the organization: the invitation open to this address
+
+
+GATEWAY = "<html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>"
+
+
+@respx.mock
+def test_a_proxys_page_is_never_the_message_and_a_gateway_error_is_worth_retrying(capsys):
+    config.save({"token": "tok"})
+    orgs = respx.get(f"{A}/keys/orgs").respond(502, text=GATEWAY, headers={"retry-after": "20"})
+    assert cli.main(["org", "members", "--json"]) == cli.LATER
+    got = capsys.readouterr()
+    error = json.loads(got.out)["error"]
+    assert error == {"type": "api_error", "code": "service_unavailable", "retryable": True, "next_step": None,
+                     "message": "the service answered HTTP 502; try again in a minute", "retry_after_s": 20.0}
+    assert "nginx" not in got.out + got.err and "html" not in got.err
+    for status in (503, 504):
+        orgs.respond(status, text="upstream timed out")
+        assert cli.main(["org", "members"]) == cli.LATER
+        assert capsys.readouterr().err.startswith(f"error: the service answered HTTP {status}; try again in a minute")
+    orgs.respond(418, text="<html>teapot</html>")   # any other page: the status, never the page, and no retry
+    assert cli.main(["org", "members", "--json"]) == cli.FAILED
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["message"], error["code"], error["retryable"]) == (
+        "the service answered HTTP 418; try again in a minute", None, False)
+    # a 200 that is not JSON, as a captive portal answers: the same retryable error, never `internal`
+    orgs.respond(200, text="<html>sign in to the hotel wifi</html>")
+    assert cli.main(["org", "members", "--json"]) == cli.LATER
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["code"], error["message"]) == ("service_unavailable",
+                                                 "the service answered HTTP 200; try again in a minute")
+    respx.post(f"{A}/device/code").respond(502, text=GATEWAY)   # the sign-in's first call too
+    config.save({})
+    assert cli.main(["login", "--json"]) == cli.LATER
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "service_unavailable"
+
+
+@respx.mock
+def test_a_pickup_that_fails_is_the_error_and_never_a_fresh_sign_in(capsys):
+    config.save({"token": "tok", "email": "alice@example.test"})
+    pick = respx.post(f"{A}/keys/cli").respond(502, text=GATEWAY)
+    device = respx.post(f"{A}/device/code").respond(json=CODE)
+    assert cli.main(["login", "--json"]) == cli.LATER
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "service_unavailable"
+    assert not device.called and config.load()["token"] == "tok"
+    pick.respond(500, json={"detail": "the database is down"})
+    assert cli.main(["login", "--json"]) == cli.FAILED and not device.called
+    assert json.loads(capsys.readouterr().out)["error"]["message"] == "the database is down"
+    for status in (401, 403):   # the sign-in has ended: a fresh one
+        pick.respond(status, json={"detail": "sign in"})
+        assert cli.main(["login", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["status"] == "pending"
+        config.save({"token": "tok"})
+    assert device.call_count == 2
+
+
+@respx.mock
+def test_whoami_lists_the_invitations_accounts_has_now_never_the_saved_one(capsys):
+    stale = {"id": "inv_old", "org": "gone", "org_name": "Gone", "role": "member", "expires": 1_900_000_000}
+    config.save({"token": "tok", "email": "bob@gmail.test", "no_api_key_code": "invitation_pending",
+                 "no_api_key": "Gone has invited you", "invitation": stale})
+    orgs = respx.get(f"{A}/keys/orgs").respond(json=[])
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    listed = respx.get(f"{A}/keys/invitations").respond(json=[
+        {"id": "inv_1", "org": "acme", "name": "Acme", "role": "member", "expires": 1_900_000_000},
+        {"id": "inv_2", "org": "beta", "name": "Beta", "role": "admin"}])
+    assert cli.main(["whoami"]) == cli.AUTH
+    got = capsys.readouterr()
+    assert "invite: Acme has invited you to join it as member, until" in got.out and "(inv_1)" in got.out
+    assert "invite: Beta has invited you to join it as admin. (inv_2)" in got.out and "Gone" not in got.out
+    assert got.err.endswith("Next: kennet org join acme\n")
+    listed.respond(json=[])   # accounts has none open: the saved one is not shown
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    seen = json.loads(capsys.readouterr().out)
+    assert "invitations" not in seen and seen["error"]["next_step"] != "kennet org join gone"
+    # accounts cannot say: the saved one stands in, unless it has expired or the person is in an organization
+    listed.respond(500, json={"detail": "down"})
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    assert json.loads(capsys.readouterr().out)["invitations"][0]["id"] == "inv_old"
+    config.save({**config.load(), "invitation": {**stale, "expires": 1_000}})
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    assert "invitations" not in json.loads(capsys.readouterr().out)
+    config.save({**config.load(), "invitation": stale})
+    orgs.respond(json=[{"id": "acme", "role": "member", "grants": []}])
+    assert cli.main(["whoami", "--json"]) == cli.AUTH
+    assert "invitations" not in json.loads(capsys.readouterr().out)
+
+
+def test_twin_names_a_saved_invitation_only_until_it_expires_and_sends_to_login(home, capsys):
+    (home / "t.json").write_text("{}")
+    invitation = {"id": "inv_1", "org": "acme", "org_name": "Acme", "role": "member", "expires": 1_900_000_000}
+    config.save({"token": "tok", "email": "bob@gmail.test", "no_api_key_code": "invitation_pending",
+                 "no_api_key": "Acme has invited you to join it", "invitation": invitation})
+    assert cli.main(["twin", str(home / "t.json"), "--json"]) == cli.AUTH
+    got = json.loads(capsys.readouterr().out)
+    assert (got["error"]["next_step"], got["reason"]) == ("kennet login", "invitation_pending")   # it asks again
+    config.save({**config.load(), "no_api_key_code": None, "invitation": {**invitation, "expires": 1_000}})
+    assert cli.main(["twin", str(home / "t.json"), "--json"]) == cli.AUTH
+    got = json.loads(capsys.readouterr().out)
+    assert got["reason"] != "invitation_pending" and "invitation" not in got
+
+
+def test_an_interrupt_under_json_is_still_one_json_object(monkeypatch, capsys):
+    def stop(a):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(cli, "cmd_whoami", stop)
+    assert cli.main(["whoami", "--json"]) == 130
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "interrupted"
+    assert cli.main(["whoami"]) == 130 and capsys.readouterr().out == ""
+
+
+def test_the_debug_log_never_holds_a_key(monkeypatch, capsys):
+    held, flagged = (config.KEY_PREFIX + "live_" + tag for tag in ("canary1", "canary2"))   # made here, never written
+
+    def broken(a):
+        raise RuntimeError(f"refused {held} for this call")
+    monkeypatch.setattr(cli, "cmd_twin", broken)
+    monkeypatch.setattr(cli.sys, "argv", ["kennet", "twin", "t.json", "--api-key", flagged,
+                                          "--key=consistency1", "--key", "consistency2"])
+    assert cli.main(["twin", "t.json", "--api-key", flagged]) == cli.FAILED
+    capsys.readouterr()
+    log = (config.home() / "debug.log").read_text()
+    assert "canary" not in log and "consistency" not in log
+    assert "--api-key <redacted>" in log and "--key=<redacted>" in log and "mai_sk_<redacted>" in log
