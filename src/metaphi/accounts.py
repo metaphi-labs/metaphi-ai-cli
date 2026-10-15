@@ -197,13 +197,16 @@ def _keep(body: dict[str, Any], token: str) -> None:
         cfg.pop(name, None)  # the server revoked the keys it handed last; a fresh sign-in is the step-up
     cfg.update({"token": token, "email": body.get("email")})
     if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
-        cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
+        cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"], "api_key_from": "login"})
         if isinstance(body.get("org"), str) and body["org"]:
             cfg["org"] = body["org"]
     else:
-        # handed no key: a key saved before speaks for an organization this sign-in is not given, so it goes, and
-        # what is kept is why (and the organization it is about), which whoami and twin say again as it was said
-        cfg.pop("api_key", None)
+        # handed no key: a key the last sign-in handed speaks for an organization this one is not given, so it goes
+        # (one the person saved by hand stays theirs), and what is kept is why (and the organization it is about),
+        # which whoami and twin say again as it was said
+        if cfg.get("api_key_from") == "login":
+            cfg.pop("api_key", None)
+            cfg.pop("api_key_from", None)
         if isinstance(body.get("org"), str) and body["org"]:
             cfg["no_api_key_org"] = body["org"]
     cfg.update({k: body[k] for k in ("no_api_key", "no_api_key_code") if isinstance(body.get(k), str) and body[k]})
@@ -259,8 +262,8 @@ def login(say: Callable[[str], None] = print, open_browser: bool = True,
 def logout() -> None:
     cfg = config.load()
     token = cfg.pop("token", None)
-    for name in ("email", "api_key", "test_api_key", "org", "no_api_key", "no_api_key_code", "invitation", "pending",
-                 "device_code", "step_up"):
+    for name in ("email", "api_key", "api_key_from", "test_api_key", "org", "no_api_key", "no_api_key_code",
+                 "no_api_key_org", "invitation", "pending", "device_code", "step_up"):
         cfg.pop(name, None)
     config.save(cfg)
     if token:
@@ -386,14 +389,11 @@ def managed(name: str | None) -> dict[str, Any]:
 
 
 def _not_manager(o: dict[str, Any]) -> Error:
-    """A person in an organization who is not its owner or admin, asking for its members: who they are there, and
-    who may, when accounts names its owners."""
+    """A person in an organization who is not its owner or admin, asking for its members: who they are there."""
     role = o.get("role") or "member"
-    owners = [x for x in o.get("owners") or [] if isinstance(x, str)]
-    e = Error(f"only owners and admins of {o['id']} see its members; you're {'an' if role[0] in 'aeiou' else 'a'} "
-              f"{'billing member' if role == 'billing' else role}"
-              + (f"; its owners: {', '.join(owners)}" if owners else ""), code="not_manager")
-    return e
+    return Error(f"only owners and admins of {o['id']} see or change its members; you're "
+                 f"{'an' if role[0] in 'aeiou' else 'a'} {'billing member' if role == 'billing' else role}",
+                 code="not_manager")
 
 
 def _member(org_id: str, email: str) -> str:

@@ -72,7 +72,7 @@ their data goes.
   `kennet login` or come from `METAPHI_API_KEY`.
 - An organization has one free test run in all (`--test`): a real twin through the same pipeline, of a file up
   to 2 MiB. Spend it on a representative file, and ask the user which one before you do. Once it is used the
-  refusal is `test_runs_used` (exit 1; `next_step` is the same file without `--test`): runs from then on are
+  refusal is `test_runs_used` (exit 1; `next_step` is the same command without `--test`): runs from then on are
   live. A live run draws the organization's prepaid credit:
   ask the user before the first one, even after a good test run.
 - `kennet` says nothing about new releases under `--json`. What install.sh installed updates itself in the
@@ -340,7 +340,7 @@ kennet org members remove bob@acme.com --json         # {{"org", "email", "statu
   invitation could not be mailed; the user invites them on the keys page the message names.
 - `--org <id>` names the organization when the user manages several; the error lists them.
 - `error.code` `not_manager`: the user is in the organization but not an owner or admin, so its members are not
-  theirs to see or change. Tell them, with the owners when the message names them; there is no command for it.
+  theirs to see or change. Tell them; there is no command for it.
 - `error.code` `step_up_required`: the change needs a recent sign-in. Run `kennet login --json` (and
   `--complete`, step 2) with the user, then the same command once more.
 - Any other refusal (only an owner changes an owner; the organization keeps one owner; the address belongs to

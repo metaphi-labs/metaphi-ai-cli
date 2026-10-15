@@ -193,9 +193,10 @@ def test_everything_is_in_the_config_file_and_no_keychain_is_asked(home):
 # Taking a key
 
 def test_login_with_api_key_reads_stdin_not_argv(home, monkeypatch, capsys):
+    config.save({"api_key": "mai_sk_old", "api_key_from": "login"})
     monkeypatch.setattr("sys.stdin", io.StringIO("mai_sk_piped\n"))
     assert cli.main(["login", "--with-api-key"]) == 0
-    assert config.load()["api_key"] == "mai_sk_piped"
+    assert config.load() == {"api_key": "mai_sk_piped"}   # saved by hand: no sign-in handed no key takes it away
     assert "warning" not in capsys.readouterr().err
 
 
