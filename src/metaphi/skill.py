@@ -15,7 +15,7 @@ MARK = "<!-- written by `kennet skill install`; edits are overwritten -->"
 
 STUB = f"""---
 name: {NAME}
-description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds. Use when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
+description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds, and the organization's members. Use when the user wants to add, remove or change the role of a member of their Metaphi organization (`kennet org members`), or when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
 ---
 {MARK}
 
@@ -35,7 +35,7 @@ GUIDE = f"""# Kennet from the command line (kennet {__version__})
 
 Kennet is Metaphi AI's RL infrastructure. Through this CLI it offers synthetic twinning (steps 3 to 5) and the
 task sets your organization holds, its deliveries (step 6). Steps 1 and 2, the sign-in, are the same for both.
-Authoring and checking tasks is step 7.
+Managing the organization's members is step 7; authoring and checking tasks is step 8.
 
 `kennet twin <file>` uploads one trace file (JSON, JSON Lines or text) to Metaphi AI's service and writes its
 synthetic twin beside it: the same file, same structure, with every real person, private organization, account
@@ -169,6 +169,7 @@ then `twins wait` each id. On `rate_limited_concurrent`, wait for one to end bef
 | `error.code` | What to do |
 | --- | --- |
 | `not_signed_in`, `login_expired`, `login_refused` | Step 2, from its start. |
+| `step_up_required` | A change to the organization needs a recent sign-in. Step 2, from its start, then the same command once more. |
 | `authorization_pending` | The user has not approved the code yet. Run `kennet login --complete --json` again, or wait for them. |
 | `no_api_key` | Signed in, and no key came with the sign-in. If `next_step` is `kennet org create <name>`, the user is in no organization: make theirs (step 1). If it is `kennet login`, run `kennet login --json` once: it picks the keys up, with no browser, if access was given since. If it comes back `no_api_key` again, tell the user the message and stop. |
 | `invalid_api_key` | The key was revoked or replaced, often by a later sign-in elsewhere. Step 2, or the user sets a new `METAPHI_API_KEY`. |
@@ -251,7 +252,28 @@ browser), `directory_in_use` (the directory holds another delivery; `next_step` 
 not `<name>@<version>`), `no_container_client` (nothing to sign in; use `kennet registry token`),
 `registry_login_failed` (the client refused; its reason is in the message), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 
-## 7. Author and check tasks
+## 7. Your organization's members
+
+Owners and admins manage who is in the organization. Ask the user before every change: whom, and in which role.
+
+```sh
+kennet org members --json                             # {{"org", "role", "members": [{{"email", "role"}}], "invitations": [{{"id", "email", "role", "expires"}}]}}
+kennet org members add bob@acme.com --role admin --json   # {{"org", "email", "role", "status": "member" or "invited", "members", "link" when invited}}
+kennet org members role bob@acme.com billing --json   # the same answer as add
+kennet org members remove bob@acme.com --json         # {{"org", "email", "status": "removed" or "uninvited", "members"}}
+```
+
+- Roles are exactly `owner`, `admin`, `billing` and `member`; `add` defaults to `member`.
+- `"status": "invited"`: the address is off the organization's domains, so it is not a member yet. Give the user
+  `link`: the person joins by opening it signed in as that address, within a week. `remove` on that address takes
+  the invitation back.
+- `--org <id>` names the organization when the user manages several; the error lists them.
+- `error.code` `step_up_required`: the change needs a recent sign-in. Run `kennet login --json` (and
+  `--complete`, step 2) with the user, then the same command once more.
+- Any other refusal (only an owner changes an owner; the organization keeps one owner; the address belongs to
+  another organization) is the server's sentence in `error.message`: tell the user, and do not retry.
+
+## 8. Author and check tasks
 
 Authoring runs through Kennet's MCP tools, not this CLI. Connect them once, then sign in from `/mcp`:
 

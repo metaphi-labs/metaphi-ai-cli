@@ -176,6 +176,7 @@ but for the last:
 | `no_api_key` | signed in, but the sign-in was handed no key; the message says why. Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org create <name>` when you are in no organization; `null` while yours waits for approval, and from `login` itself; else `kennet login` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
+| `step_up_required` | a change to the organization's members needs a sign-in more recent than this one | `kennet login` (signs in afresh) |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
 
 Any other error the CLI says itself, such as a file that is not there, is a plain `MetaphiError` with `code` `None`.
@@ -209,8 +210,23 @@ If you are in no organization, make yours: `kennet org create "Acme Robotics"`. 
 Metaphi AI approves each new organization; you are mailed when yours is, and `kennet login` then saves its keys, with no second sign-in.
 `kennet whoami` says so while it waits.
 
-A sign-in the server has ended is an error, not a name read back from a file. People, roles and keys are managed in
-the console at <https://app.metaphi.ai/console>.
+A sign-in the server has ended is an error, not a name read back from a file.
+
+Owners and admins manage the organization's members from here (keys are made in the console at
+<https://app.metaphi.ai/console>):
+
+```sh
+kennet org members                              # members and open invitations, with each one's role
+kennet org members add bob@acme.com             # in as a member; --role owner|admin|billing|member
+kennet org members role bob@acme.com admin      # change a member's role
+kennet org members remove bob@acme.com          # take them out, or take back their invitation
+```
+
+An address on a domain your organization claims joins at once. Any other address is invited: `add` prints a link,
+which the person opens signed in as that address, within a week. Only an owner makes, changes or removes an owner,
+and the organization always keeps one. A change needs a recent sign-in: when yours is too old, `kennet` offers a
+fresh one at a terminal and tries again; elsewhere it fails with `step_up_required` and `kennet login` signs in
+afresh. `--org <id>` picks the organization when you manage several.
 
 ## Credits
 

@@ -2,6 +2,7 @@
 
     kennet login                        sign in through the browser; your organization's keys come with it
     kennet org create "Acme"            make your organization, if you are in none; Metaphi AI approves it
+    kennet org members                  its members; `add`, `role`, `remove` change them (owners and admins)
     kennet twin trace.json              twin a trace with that key
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
@@ -96,7 +97,8 @@ def cmd_login(a: argparse.Namespace) -> None:
         _out(a, {"keys": True}, "key saved on this machine")
         return
     say = _progress(a)
-    if accounts.pending() is None and (got := accounts.pickup()) is not None:
+    # a refusal for a sign-in too old to change an organization (`step_up_required`) asks for a fresh one, not a pickup
+    if accounts.pending() is None and not config.load().get("step_up") and (got := accounts.pickup()) is not None:
         # signed in already: the keys come by the token this machine holds, and nobody opens a browser
         _signed_in(a, got)
         return
@@ -435,6 +437,72 @@ def cmd_org_create(a: argparse.Namespace) -> None:
          "Next: kennet login" + ("" if ready else "   (once it is approved; it says so until then)"))
 
 
+def _stepped_up(a: argparse.Namespace, change):
+    """A change to the organization; refused for a sign-in too old (`step_up_required`), a person at a terminal is
+    offered a fresh sign-in and the change is tried once more. Away from one, the refusal names `kennet login`."""
+    try:
+        return change()
+    except accounts.Error as e:
+        if e.code != "step_up_required" or a.json or not _interactive():
+            raise
+        try:
+            said = input(f"{e.message}\nSign in again now? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise e from None
+        if said not in ("", "y", "yes"):
+            raise
+        accounts.login()
+        return change()   # once: a second refusal is the error
+
+
+def _members(o: dict) -> tuple[list[dict], list[dict]]:
+    """An organization's members [{email, role}], owners first, and its open invitations [{id, email, role, expires}]."""
+    held = o.get("members") or {}
+    members = sorted(({"email": m, "role": r} for m, r in held.items()),
+                     key=lambda m: (accounts.ROLES.index(m["role"]) if m["role"] in accounts.ROLES else 9, m["email"]))
+    invitations = [{k: i.get(k) for k in ("id", "email", "role", "expires")} for i in o.get("invitations") or []]
+    return members, invitations
+
+
+def _member_lines(members: list[dict], invitations: list[dict]) -> list[str]:
+    width = max([len(m["email"]) for m in members + invitations] or [0])
+    return ([f"  {m['email']:<{width}}  {m['role']}" for m in members]
+            + [f"  {i['email']:<{width}}  {i['role']}  invited, until {_when(i.get('expires'))}" for i in invitations])
+
+
+def cmd_org_members(a: argparse.Namespace) -> None:
+    o = accounts.managed(a.org)
+    members, invitations = _members(o)
+    _out(a, {"org": o["id"], "role": o.get("role"), "members": members, "invitations": invitations},
+         f"{o['id']} (you: {o.get('role')})", *_member_lines(members, invitations))
+
+
+def cmd_org_members_set(a: argparse.Namespace) -> None:
+    """`add` and `role`: one PUT, which adds a person in the role or changes a member's."""
+    o = accounts.managed(a.org)
+    email = a.email.strip().lower()
+    got = _stepped_up(a, lambda: accounts.set_member(o["id"], email, a.role))
+    members, _ = _members(got)
+    result = {"org": o["id"], "email": email, "role": a.role}
+    if isinstance(got.get("link"), str):   # off the organization's domains: the person accepts, as that address
+        _out(a, {**result, "status": "invited", "link": got["link"], "invitation": got.get("id"), "members": members},
+             f"{email} is invited to {o['id']} as {a.role}; they join by opening this link, signed in as {email}:",
+             f"  {got['link']}")
+        return
+    _out(a, {**result, "status": "member", "members": members}, f"{email} is {a.role} of {o['id']}")
+
+
+def cmd_org_members_remove(a: argparse.Namespace) -> None:
+    o = accounts.managed(a.org)
+    email = a.email.strip().lower()
+    got = _stepped_up(a, lambda: accounts.remove_member(o["id"], email))
+    members, _ = _members(got)
+    uninvited = "invited" in got   # the address was invited, not a member: the invitation is taken back
+    _out(a, {"org": o["id"], "email": email, "status": "uninvited" if uninvited else "removed", "members": members},
+         f"{email}'s invitation to {o['id']} is taken back" if uninvited else f"{email} is no longer in {o['id']}")
+
+
 def cmd_credits(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     out = o["credits_usd"] <= 0
@@ -467,6 +535,8 @@ EXAMPLES = """\
 examples:
   kennet login                      sign in; your organization's keys are saved on this machine
   kennet org create "Acme"          make your organization, if you are in none; Metaphi AI approves it
+  kennet org members                its members and open invitations (owners and admins)
+  kennet org members add bob@acme.com --role admin   add a person; another domain gets an invitation link
   kennet whoami                     who you are, your organization, its balance, the key in use
   kennet twin trace.json --test     a free test twin, written to trace.twin.json
   kennet twin trace.json --no-wait  start a twin and return its id
@@ -523,7 +593,7 @@ def parser() -> argparse.ArgumentParser:
     _json_flag(s)
     s.set_defaults(fn=cmd_whoami)
 
-    s = sub.add_parser("org", help="your organization: make it, if you are in none")
+    s = sub.add_parser("org", help="your organization: make it, if you are in none; manage its members")
     s.set_defaults(fn=lambda a, s=s: s.print_help())
     verbs = s.add_subparsers(dest="verb", metavar="<verb>")
     v = verbs.add_parser("create", help="make an organization and own it; Metaphi AI approves it for Kennet and "
@@ -531,6 +601,27 @@ def parser() -> argparse.ArgumentParser:
     v.add_argument("name", help="what it is called, e.g. \"Acme Robotics\"")
     _json_flag(v)
     v.set_defaults(fn=cmd_org_create)
+    m = verbs.add_parser("members", help="its members and open invitations; add, change or remove one (owners and "
+                         "admins)")
+    m.add_argument("--org", help="the organization, when you manage several")
+    _json_flag(m)
+    m.set_defaults(fn=cmd_org_members)
+    members = m.add_subparsers(dest="members_verb", metavar="<verb>")
+    v = members.add_parser("add", help="add a person; an address off your organization's domains is sent an "
+                           "invitation link instead")
+    v.add_argument("email")
+    v.add_argument("--role", choices=accounts.ROLES, default="member", help="default member")
+    v.set_defaults(fn=cmd_org_members_set)
+    r = members.add_parser("role", help="change a member's role (only an owner makes or changes an owner)")
+    r.add_argument("email")
+    r.add_argument("role", choices=accounts.ROLES)
+    r.set_defaults(fn=cmd_org_members_set)
+    d = members.add_parser("remove", help="take a member out, or take back an invitation; the keys they made stay")
+    d.add_argument("email")
+    d.set_defaults(fn=cmd_org_members_remove)
+    for verb in (v, r, d):
+        verb.add_argument("--org", help="the organization, when you manage several")
+        _json_flag(verb)
 
     s = sub.add_parser("credits", help="your organization's prepaid balance")
     s.add_argument("--org")

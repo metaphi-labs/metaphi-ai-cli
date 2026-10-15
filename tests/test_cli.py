@@ -807,3 +807,131 @@ def test_every_error_object_says_its_next_step_even_when_there_is_none():
     assert errors.APIError("m").to_dict()["next_step"] is None
     assert errors.from_object({"type": "api_error", "code": "unavailable", "message": "m"}).to_dict() == {
         "type": "api_error", "code": "unavailable", "message": "m", "retryable": False, "next_step": None}
+
+
+ACME = {"id": "acme", "name": "Acme", "role": "owner", "grants": ["twin"],
+        "members": {"bob@acme.test": "member", "alice@acme.test": "owner"},
+        "invited": {"carol@gmail.test": "admin"},
+        "invitations": [{"id": "inv_1", "email": "carol@gmail.test", "role": "admin", "scopes": [], "by": "alice@acme.test",
+                         "expires": 1_900_000_000}]}
+STEP_UP = {"detail": {"code": "step_up_required",
+                      "message": "confirm it's you: run `kennet login` again, then retry"}}
+
+
+@respx.mock
+def test_org_members_lists_members_owners_first_and_open_invitations(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[ACME])
+    assert cli.main(["org", "members", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "org": "acme", "role": "owner",
+        "members": [{"email": "alice@acme.test", "role": "owner"}, {"email": "bob@acme.test", "role": "member"}],
+        "invitations": [{"id": "inv_1", "email": "carol@gmail.test", "role": "admin", "expires": 1_900_000_000}]}
+    assert cli.main(["org", "members"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "acme (you: owner)" and out[1].split() == ["alice@acme.test", "owner"]
+    assert out[3].split()[:4] == ["carol@gmail.test", "admin", "invited,", "until"]
+    respx.get(f"{A}/keys/orgs").respond(json=[])   # a member or billing member manages none
+    assert cli.main(["org", "members"]) == cli.FAILED
+    assert "owner or admin of no organization" in capsys.readouterr().err
+    respx.get(f"{A}/keys/orgs").respond(json=[ACME, {**ACME, "id": "beta"}])
+    assert cli.main(["org", "members"]) == cli.FAILED
+    assert "name one with --org (acme, beta)" in capsys.readouterr().err
+    assert cli.main(["org", "members", "--org", "beta"]) == 0
+
+
+@respx.mock
+def test_org_members_add_role_and_remove_call_the_member_route_with_the_bearer(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[ACME])
+    put = respx.put(f"{A}/keys/orgs/acme/members/dan@acme.test").respond(
+        json={"members": {**ACME["members"], "dan@acme.test": "member"}, "invited": {}})
+    assert cli.main(["org", "members", "add", "Dan@Acme.test"]) == 0
+    assert capsys.readouterr().out == "dan@acme.test is member of acme\n"
+    assert json.loads(put.calls[0].request.content) == {"role": "member"}
+    assert put.calls[0].request.headers["authorization"] == "Bearer tok"
+    put.respond(json={"members": {**ACME["members"], "dan@acme.test": "billing"}, "invited": {}})
+    assert cli.main(["org", "members", "role", "dan@acme.test", "billing", "--json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert (got["status"], got["role"], json.loads(put.calls[1].request.content)) == ("member", "billing",
+                                                                                        {"role": "billing"})
+    assert {"email": "dan@acme.test", "role": "billing"} in got["members"]
+    gone = respx.delete(f"{A}/keys/orgs/acme/members/dan@acme.test").respond(json={"members": ACME["members"]})
+    assert cli.main(["org", "members", "remove", "dan@acme.test", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "removed" and gone.call_count == 1
+    respx.delete(f"{A}/keys/orgs/acme/members/carol@gmail.test").respond(
+        json={"members": ACME["members"], "invited": {}})
+    assert cli.main(["org", "members", "remove", "carol@gmail.test"]) == 0
+    assert capsys.readouterr().out == "carol@gmail.test's invitation to acme is taken back\n"
+    with pytest.raises(SystemExit):   # roles are exactly accounts' four
+        cli.main(["org", "members", "add", "dan@acme.test", "--role", "viewer"])
+
+
+@respx.mock
+def test_org_members_add_off_domain_prints_the_invitation_link(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[ACME])
+    link = "https://app.metaphi.ai/invite/abc"
+    respx.put(f"{A}/keys/orgs/acme/members/erin@gmail.test").respond(
+        json={"members": ACME["members"], "invited": {"erin@gmail.test": "admin"}, "invitations": [], "link": link,
+              "id": "inv_2"})
+    assert cli.main(["org", "members", "add", "erin@gmail.test", "--role", "admin"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "erin@gmail.test is invited to acme as admin; they join by opening this link, signed in as erin@gmail.test:",
+        f"  {link}"]
+    assert cli.main(["org", "members", "add", "erin@gmail.test", "--role", "admin", "--json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert (got["status"], got["link"], got["invitation"]) == ("invited", link, "inv_2")
+
+
+@respx.mock
+def test_server_refusals_on_members_are_one_line_errors(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[{**ACME, "role": "admin"}])
+    put = respx.put(f"{A}/keys/orgs/acme/members/alice@acme.test")
+    put.respond(403, json={"detail": "only an owner makes or changes an owner"})
+    assert cli.main(["org", "members", "role", "alice@acme.test", "member"]) == cli.FAILED
+    assert capsys.readouterr().err == "error: only an owner makes or changes an owner\n"
+    put.respond(409, json={"detail": "the organization keeps one owner; make another owner first"})
+    assert cli.main(["org", "members", "role", "alice@acme.test", "member", "--json"]) == cli.FAILED
+    got = capsys.readouterr()
+    assert json.loads(got.out)["error"]["message"] == "the organization keeps one owner; make another owner first"
+
+
+@respx.mock
+def test_a_stale_sign_in_is_step_up_required_and_the_next_login_signs_in_afresh(monkeypatch, capsys):
+    config.save({"token": "tok", "email": "alice@acme.test"})
+    respx.get(f"{A}/keys/orgs").respond(json=[ACME])
+    respx.put(f"{A}/keys/orgs/acme/members/dan@acme.test").respond(401, json=STEP_UP)
+    assert cli.main(["org", "members", "add", "dan@acme.test", "--json"]) == cli.AUTH
+    got = json.loads(capsys.readouterr().out)["error"]
+    assert (got["code"], got["next_step"]) == ("step_up_required", "kennet login")
+    assert got["message"] == "confirm it's you: run `kennet login` again, then retry"
+    # `kennet login` does not pick the keys up by the stale token: it starts a new sign-in
+    pick = respx.post(f"{A}/keys/cli").respond(json={"email": "alice@acme.test"})
+    respx.post(f"{A}/device/code").respond(json=CODE)
+    assert cli.main(["login", "--no-browser", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "pending" and pick.call_count == 0
+    respx.post(f"{A}/oauth/token").respond(json=SIGNED)
+    cli.main(["login", "--complete", "--json"])
+    assert "step_up" not in config.load()
+
+
+@respx.mock
+def test_at_a_terminal_a_stale_sign_in_offers_a_fresh_one_and_retries_once(monkeypatch, capsys):
+    config.save({"token": "tok"})
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    signed = []
+    monkeypatch.setattr(accounts, "login", lambda: signed.append(1) or SIGNED)
+    respx.get(f"{A}/keys/orgs").respond(json=[ACME])
+    put = respx.put(f"{A}/keys/orgs/acme/members/dan@acme.test").mock(side_effect=[
+        httpx.Response(401, json=STEP_UP), httpx.Response(200, json={"members": {"dan@acme.test": "member"}})])
+    assert cli.main(["org", "members", "add", "dan@acme.test"]) == 0
+    assert signed == [1] and put.call_count == 2
+    assert capsys.readouterr().out.endswith("dan@acme.test is member of acme\n")
+    put.mock(side_effect=[httpx.Response(401, json=STEP_UP), httpx.Response(401, json=STEP_UP)])
+    assert cli.main(["org", "members", "add", "dan@acme.test"]) == cli.AUTH   # once: a second refusal is the error
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    put.mock(side_effect=[httpx.Response(401, json=STEP_UP)])
+    assert cli.main(["org", "members", "add", "dan@acme.test"]) == cli.AUTH and signed == [1, 1]
