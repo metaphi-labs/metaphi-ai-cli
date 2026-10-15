@@ -1,6 +1,6 @@
 [project]
 name = "metaphi-ai"
-version = "0.1.17"
+version = "0.1.18"
 description = "The Metaphi AI command line: sign in, twin traces, and pull the task sets your organization holds."
 readme = "README.md"
 requires-python = ">=3.10"

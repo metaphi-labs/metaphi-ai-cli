@@ -192,15 +192,21 @@ def finish(sleep: Callable[[float], None] = time.sleep, wait_s: float | None = N
 def _keep(body: dict[str, Any], token: str) -> None:
     """Save what the server handed this machine: the token, and the organization's keys or why none came."""
     cfg = config.load()
-    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "invitation",
-                 "step_up"):
+    for name in ("pending", "device_code", "test_api_key", "org", "no_api_key", "no_api_key_code", "no_api_key_org",
+                 "invitation", "step_up"):
         cfg.pop(name, None)  # the server revoked the keys it handed last; a fresh sign-in is the step-up
     cfg.update({"token": token, "email": body.get("email")})
     if all(str(body.get(k) or "").startswith(config.KEY_PREFIX) for k in ("api_key", "test_api_key")):
         cfg.update({"api_key": body["api_key"], "test_api_key": body["test_api_key"]})
-    # why whoami and twin can say, later, what this sign-in was and was not given
-    cfg.update({k: body[k] for k in ("org", "no_api_key", "no_api_key_code")
-                if isinstance(body.get(k), str) and body[k]})
+        if isinstance(body.get("org"), str) and body["org"]:
+            cfg["org"] = body["org"]
+    else:
+        # handed no key: a key saved before speaks for an organization this sign-in is not given, so it goes, and
+        # what is kept is why (and the organization it is about), which whoami and twin say again as it was said
+        cfg.pop("api_key", None)
+        if isinstance(body.get("org"), str) and body["org"]:
+            cfg["no_api_key_org"] = body["org"]
+    cfg.update({k: body[k] for k in ("no_api_key", "no_api_key_code") if isinstance(body.get(k), str) and body[k]})
     if (invitation := invited(body)) is not None:   # `invitation_pending`: the organization `kennet org join` accepts
         cfg["invitation"] = invitation
     config.save(cfg)
@@ -362,7 +368,11 @@ def join(target: str) -> dict[str, Any]:
 def managed(name: str | None) -> dict[str, Any]:
     """The organization a members command acts on: the one named, or the only one the person manages (owner or
     admin). Accounts lists every organization the person is in; only those they manage are theirs to act on."""
-    mine = [o for o in orgs() if o.get("role") in MANAGERS]
+    every = orgs()
+    mine = [o for o in every if o.get("role") in MANAGERS]
+    unmanaged = not mine or name and name not in [o["id"] for o in mine]
+    if unmanaged and (theirs := next((o for o in every if not name or o["id"] == name), None)) is not None:
+        raise _not_manager(theirs)   # in it, not its owner or admin
     if name:
         for o in mine:
             if o["id"] == name:
@@ -373,6 +383,17 @@ def managed(name: str | None) -> dict[str, Any]:
     if not mine:
         raise Error("you are an owner or admin of no organization")
     raise Error(f"you manage {len(mine)} organizations; name one with --org ({', '.join(o['id'] for o in mine)})")
+
+
+def _not_manager(o: dict[str, Any]) -> Error:
+    """A person in an organization who is not its owner or admin, asking for its members: who they are there, and
+    who may, when accounts names its owners."""
+    role = o.get("role") or "member"
+    owners = [x for x in o.get("owners") or [] if isinstance(x, str)]
+    e = Error(f"only owners and admins of {o['id']} see its members; you're {'an' if role[0] in 'aeiou' else 'a'} "
+              f"{'billing member' if role == 'billing' else role}"
+              + (f"; its owners: {', '.join(owners)}" if owners else ""), code="not_manager")
+    return e
 
 
 def _member(org_id: str, email: str) -> str:

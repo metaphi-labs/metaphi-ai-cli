@@ -223,6 +223,8 @@ but for the last:
 | `not_signed_in` | no sign-in on this machine, or the server has ended it | `kennet login` |
 | `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
 | `no_api_key` | signed in, but the sign-in was handed no key; the message says why, and `reason` which it is (below). Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org join <org>` when an organization has invited you (`invitation_pending`); `kennet org create <name>` when you are in no organization and none has; `null` when you were taken out of yours (`removed`: an owner of it adds you back), while yours waits for approval, and from `login` itself; else `kennet login` |
+| `not_manager` | `kennet org members` by a person in the organization who is not its owner or admin; the message names the owners when accounts does | `null` |
+| `test_runs_used` | `--test` once the organization's free test run is spent (exit 1) | the same `kennet twin <file>`, live |
 | `no_invitation` | `kennet org join` found no open invitation from that organization: it expired or was taken back | `null` |
 | `invitation_for_another_address` | the invitation `kennet org join` names was sent to another address than the one signed in: `kennet logout`, then `kennet login` as that address | `null` |
 | `unreachable` (`api_error`) | the twin service did not answer (`retryable`) | `null` |
@@ -272,7 +274,8 @@ If you are in no organization and none has invited you, make yours: `kennet org 
 it. During the private beta Metaphi AI approves each new organization; you are mailed when yours is, and
 `kennet login` then saves its keys, with no second sign-in. `kennet whoami` says so while it waits.
 
-If an owner or admin takes you out of your organization, its keys stop working and the CLI says so (`removed`):
+A sign-in handed no key clears the keys and organization saved before it and keeps why, so `kennet whoami`
+says that reason again rather than a refused key. If an owner or admin takes you out of your organization, its keys stop working and the CLI says so (`removed`):
 only an owner of it can add you back. When a saved key is refused, `kennet whoami` says why from what it may read, and
 changes no key: an invitation to accept, a key replaced by a sign-in elsewhere, or no organization at all; `kennet
 login` then says the rest.

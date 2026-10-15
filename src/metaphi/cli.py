@@ -42,6 +42,8 @@ def status(error: errors.MetaphiError) -> int:
     """The exit status an error ends the command with."""
     if error.code == "upgrade_required":
         return UPGRADE
+    if error.code == "test_runs_used":   # the service calls it a limit; it is spent, and no wait brings it back
+        return FAILED
     if error.type == "auth_error":
         return AUTH
     return LATER if error.retryable or error.type == "rate_limit_error" else FAILED
