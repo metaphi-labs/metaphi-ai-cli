@@ -289,7 +289,14 @@ def call(method: str, path: str, **kw: Any) -> Any:
         config.save(cfg)
         raise need(_said(r), "step_up_required", "kennet login")
     if r.status_code == 401:
-        raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
+        try:
+            r.json()
+        except ValueError:   # not accounts' answer: the sign-in is what a 401 is about
+            raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login") from None
+        # accounts' own sentence and code (`not_cli_client`, or none), never a guess that the sign-in ended
+        e = need(_said(r), _code(r), "kennet login")
+        e.status = 401
+        raise e
     if r.status_code >= 400:
         raise _refused(r)   # the server's code, when its refusal carries one
     try:
@@ -368,14 +375,15 @@ def join(target: str) -> dict[str, Any]:
     return {"org": str(got.get("org") or org_id), "role": got.get("role")}
 
 
-def managed(name: str | None) -> dict[str, Any]:
-    """The organization a members command acts on: the one named, or the only one the person manages (owner or
-    admin). Accounts lists every organization the person is in; only those they manage are theirs to act on."""
+def managed(name: str | None, what: str = "members") -> dict[str, Any]:
+    """The organization a members or keys command acts on: the one named, or the only one the person manages (owner
+    or admin). Accounts lists every organization the person is in; only those they manage are theirs to act on.
+    `what` is what the refusal says they may not see or change."""
     every = orgs()
     mine = [o for o in every if o.get("role") in MANAGERS]
     unmanaged = not mine or name and name not in [o["id"] for o in mine]
     if unmanaged and (theirs := next((o for o in every if not name or o["id"] == name), None)) is not None:
-        raise _not_manager(theirs)   # in it, not its owner or admin
+        raise _not_manager(theirs, what)   # in it, not its owner or admin
     if name:
         for o in mine:
             if o["id"] == name:
@@ -388,10 +396,11 @@ def managed(name: str | None) -> dict[str, Any]:
     raise Error(f"you manage {len(mine)} organizations; name one with --org ({', '.join(o['id'] for o in mine)})")
 
 
-def _not_manager(o: dict[str, Any]) -> Error:
-    """A person in an organization who is not its owner or admin, asking for its members: who they are there."""
+def _not_manager(o: dict[str, Any], what: str = "members") -> Error:
+    """A person in an organization who is not its owner or admin, asking for its members or keys: who they are
+    there."""
     role = o.get("role") or "member"
-    return Error(f"only owners and admins of {o['id']} see or change its members; you're "
+    return Error(f"only owners and admins of {o['id']} see or change its {what}; you're "
                  f"{'an' if role[0] in 'aeiou' else 'a'} {'billing member' if role == 'billing' else role}",
                  code="not_manager")
 
@@ -409,6 +418,20 @@ def set_member(org_id: str, email: str, role: str) -> dict[str, Any]:
 def remove_member(org_id: str, email: str) -> dict[str, Any]:
     """Take a member out, or take back an open invitation to that address."""
     return call("DELETE", _member(org_id, email))
+
+
+def create_key(org_id: str, name: str, scopes: list[str], test: bool = False) -> dict[str, Any]:
+    """A service key of the organization holding `scopes`: the answer carries the key itself (`key`), the one time
+    accounts ever says it."""
+    made = call("POST", f"/keys/orgs/{quote(org_id, safe='')}", json={"name": name, "scopes": scopes, "test": test})
+    if not (isinstance(made, dict) and str(made.get("key") or "").startswith(config.KEY_PREFIX)):
+        raise Error("the server sent no key")
+    return made
+
+
+def revoke_key(org_id: str, key_id: str) -> dict[str, Any]:
+    """The key stops working at its next check; accounts keeps its row, so what it spent stays named."""
+    return call("DELETE", f"/keys/orgs/{quote(org_id, safe='')}/{quote(key_id, safe='')}")
 
 
 def org_credits() -> list[dict[str, Any]]:

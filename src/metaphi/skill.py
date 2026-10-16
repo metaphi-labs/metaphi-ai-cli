@@ -15,7 +15,7 @@ MARK = "<!-- written by `kennet skill install`; edits are overwritten -->"
 
 STUB = f"""---
 name: {NAME}
-description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds, and the organization's members. Use when the user wants to add, remove or change the role of a member of their Metaphi organization (`kennet org members`), or when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
+description: Kennet, Metaphi AI's RL infrastructure, driven through its CLI, `kennet`: synthetic twinning of agent traces, and the RL task sets (deliveries) an organization holds, and the organization's members and service keys. Use when the user wants to add, remove or change the role of a member of their Metaphi organization (`kennet org members`), or to list, create or revoke the organization's CI or service keys (`kennet keys`), or when the user wants to list, pull, verify or update delivered RL tasks (`kennet delivery`), or when the user wants real people, companies, accounts or secrets in a trace, log or transcript file replaced with consistent synthetic stand-ins (a "synthetic twin") before sharing it or training on it, or when the user is authoring, checking or running RL tasks (Harbor bundles) on Kennet: task CI, `eval_ready`, rollouts, wrong solutions; or mentions Metaphi, Kennet twins, `kennet twin`, or a `mai_sk_` key.
 ---
 {MARK}
 
@@ -36,8 +36,8 @@ GUIDE = f"""# Kennet from the command line (kennet {__version__})
 
 Kennet is Metaphi AI's RL infrastructure. Through this CLI it offers synthetic twinning (steps 3 to 5) and the
 task sets your organization holds, its deliveries (step 6). Steps 1 and 2, the sign-in, are the same for both.
-Joining an organization that invited the user, and managing its members, is step 7; authoring and checking tasks
-is step 8.
+Joining an organization that invited the user, and managing its members and service keys, is step 7; authoring
+and checking tasks is step 8.
 
 `kennet twin <file>` uploads one trace file (JSON, JSON Lines or text) to Metaphi AI's service and writes its
 synthetic twin beside it: the same file, same structure, with every real person, private organization, account
@@ -161,9 +161,10 @@ When the page does not get there:
 | "that sign-in is too old to approve a terminal" (`sign_in_too_old`) | Sign in again on the page with the button, then approve. |
 | `whoami` names the wrong address | Run `kennet logout`, then step 2 again; ask them to sign out of that account in the browser, or use a private window. |
 
-Servers and CI never sign in: an owner or admin makes the organization a key in the console
-(https://app.metaphi.ai/console), and it is set as `METAPHI_API_KEY`, or saved on the machine by
-`kennet login --with-api-key`, which reads it from stdin. The user does that; you never see the key.
+Servers and CI never sign in: an owner or admin makes the organization a service key, with `kennet keys create`
+(step 7) or in the console (https://app.metaphi.ai/console), and it is set as `METAPHI_API_KEY`, or saved on the
+machine by `kennet login --with-api-key`, which reads it from stdin. You never read the key: `kennet keys
+create` pipes it straight into the store.
 
 ## 3. Twin a file
 
@@ -301,7 +302,7 @@ browser), `directory_in_use` (the directory holds another delivery; `next_step` 
 not `<name>@<version>`), `no_container_client` (nothing to sign in; use `kennet registry token`),
 `registry_login_failed` (the client refused; its reason is in the message), `lock_invalid` and `lock_too_new` (tell the user; the second says to upgrade `kennet`).
 
-## 7. Your organization's members
+## 7. Your organization's members and keys
 
 An organization that invited the user (`reason` `invitation_pending`, or `invitation` in `whoami`) is joined with:
 
@@ -345,6 +346,42 @@ kennet org members remove bob@acme.com --json         # {{"org", "email", "statu
   `--complete`, step 2) with the user, then the same command once more.
 - Any other refusal (only an owner changes an owner; the organization keeps one owner; the address belongs to
   another organization) is the server's sentence in `error.message`: tell the user, and do not retry.
+
+Owners and admins also manage the organization's service keys: the keys CI and servers call with, as
+`METAPHI_API_KEY`. A key belongs to the organization, not to whoever made it. Ask the user before you create or
+revoke one: its name, and for a revoke, that nothing still uses it.
+
+```sh
+kennet keys list --json                     # {{"org", "keys": [{{"id", "name", "hint", "scopes", "livemode", "owner", "created_by", "created", "last_used", "revoked"}}]}}; --all adds revoked ones
+kennet keys revoke github-ci --yes --json   # by name or id (key_...); {{"org", "id", ..., "status": "revoked" or "already_revoked"}}
+```
+
+Create a key only in the pipe form, straight into the secret store that keeps it, never with `--json`:
+
+    kennet keys create github-ci | gh secret set METAPHI_API_KEY --repo acme/app
+
+- You never read, print or hold the key: it goes from `kennet` into the store and nowhere else, so it is never in
+  your output or the transcript. Down a pipe stdout carries the key alone; what was made (name, id, last four) is
+  on stderr, which is what you read and tell the user. `--test` makes a test key. Another store works the same
+  way, as long as it reads the secret from stdin (`vercel env add METAPHI_API_KEY production`, `fly secrets
+  import`); if the user's store cannot, tell them to run `kennet keys create <name>` themselves, at their
+  terminal, where it is shown to them once.
+- `--json` never carries the key unless `--show-secret` is given, and without it nothing is made:
+  `secret_destination_required`, `next_step` the pipe form. Never add `--show-secret` yourself.
+- A key holds everything the organization holds unless `--scope <scope>` (repeatable) names less. `owner`
+  `"cli"` marks a key `kennet login` handed a terminal; `service` is one made here or in the console.
+- `revoke` stops the key within a minute. At a terminal it asks first; away from one, and under `--json`, it needs
+  `--yes`, else `confirmation_required` (`next_step` is the same command with `--yes`, by id). Ask the user, then
+  run it.
+- Errors: `not_manager` (the user is not an owner or admin; tell them, no command clears it), `step_up_required`
+  (as above), `no_key` (no live key by that name or id; `kennet keys list`), `ambiguous_key` (several live keys
+  share the name, or the word is one key's id and another's name; name it by id from `kennet keys list`),
+  `name_taken` (a live key has that name; pick another or revoke it), `scope_not_held` (the organization does not
+  hold that scope), `too_many_keys` (it holds the most live keys it may; revoke an unused one first),
+  `already_revoked` (it was revoked meanwhile; nothing to do), `awaiting_approval` and `no_access` (it holds
+  nothing a key could carry yet: step 1's table). A refusal with `"type": "auth_error"` and another code, or
+  none (`not_cli_client`: the sign-in is not this CLI's), is the server's sentence: run `kennet login --json`
+  once (step 2), then the same command.
 
 ## 8. Author and check tasks
 

@@ -115,7 +115,8 @@ holding the organization's key.
 
 ## Use it from your servers
 
-A server or CI job has no browser: make it a key of its own in the console and hand it over as a secret.
+A server or CI job has no browser: an owner or admin makes it a key of its own, with `kennet keys create <name>`
+(below) or in the console, and hands it over as a secret.
 
 ```sh
 export METAPHI_API_KEY=mai_sk_...
@@ -223,7 +224,11 @@ but for the last:
 | `not_signed_in` | no sign-in on this machine, or the server has ended it | `kennet login` |
 | `authorization_pending` | `login --complete` returned before the code was approved (`retryable`) | `kennet login --complete` |
 | `no_api_key` | signed in, but the sign-in was handed no key; the message says why, and `reason` which it is (below). Keys come with a sign-in, so `kennet login` picks them up once the organization has access | `kennet org join <org>` when an organization has invited you (`invitation_pending`); `kennet org create <name>` when you are in no organization and none has; `null` when you were taken out of yours (`removed`: an owner of it adds you back), while yours waits for approval, and from `login` itself; else `kennet login` |
-| `not_manager` | `kennet org members` by a person in the organization who is not its owner or admin; the message says their role | `null` |
+| `not_manager` | `kennet org members` or `kennet keys` by a person in the organization who is not its owner or admin; the message says their role | `null` |
+| `confirmation_required` | `kennet keys revoke` away from a terminal, or under `--json`, without `--yes` | the same revoke, by id, with `--yes` |
+| `no_key`, `ambiguous_key` | `kennet keys revoke` names no live key, or a name several live keys share | `kennet keys list`; the revoke of one by id |
+| `secret_destination_required` | `kennet keys create --json` without `--show-secret`: nothing is made | the pipe form |
+| `name_taken`, `scope_not_held`, `too_many_keys` | `kennet keys create` with a name a live key holds, a scope the organization does not hold, or at its cap of live keys | `null`; `null`; `kennet keys list` |
 | `test_runs_used` | `--test` once the organization's free test run is spent (exit 1) | the same `kennet twin <file>` and flags, live; `--api-key` and `--key` are left out |
 | `no_invitation` | `kennet org join` found no open invitation from that organization: it expired or was taken back | `null` |
 | `invitation_for_another_address` | the invitation `kennet org join` names was sent to another address than the one signed in: `kennet logout`, then `kennet login` as that address | `null` |
@@ -234,7 +239,7 @@ but for the last:
 | `internal` (`api_error`) | something the CLI did not expect; `debug_log` beside the error is the file to report it with | `null` |
 | `login_expired`, `login_refused` | the sign-in code ran out, or was declined | `kennet login` |
 | `upgrade_required` (`upgrade_error`) | the service no longer serves this version (exit 5) | the upgrade command for this install |
-| `step_up_required` | a change to the organization's members needs a sign-in more recent than this one | `kennet login` (signs in afresh) |
+| `step_up_required` | a change to the organization's members or keys needs a sign-in more recent than this one | `kennet login` (signs in afresh) |
 | `timed_out` (`api_error`) | the wait ended before the twin did; it goes on | `kennet twins wait <id>` |
 
 Any other error the CLI says itself, such as a file that is not there, is a plain `MetaphiError` with `code` `None`.
@@ -282,8 +287,7 @@ login` then says the rest.
 
 A sign-in the server has ended is an error, not a name read back from a file.
 
-Owners and admins manage the organization's members from here (keys are made in the console at
-<https://app.metaphi.ai/console>):
+Owners and admins manage the organization's members from here:
 
 ```sh
 kennet org members                              # members and open invitations, with each one's role
@@ -297,6 +301,20 @@ the person accepts signed in as that address, within a week. Only an owner makes
 and the organization always keeps one. A change needs a recent sign-in: when yours is too old, `kennet` offers a
 fresh one at a terminal and tries again; elsewhere it fails with `step_up_required` and `kennet login` signs in
 afresh. `--org <id>` picks the organization when you manage several.
+
+And its service keys, the ones CI and servers call with (also on the console's keys page,
+<https://app.metaphi.ai/console>):
+
+```sh
+kennet keys list                                # live keys: name, id, last four, scopes, last use; --all adds revoked
+kennet keys create github-ci | gh secret set METAPHI_API_KEY   # all the org holds; --scope less, --test
+kennet keys revoke github-ci                    # by name or id; asks first at a terminal, --yes elsewhere
+```
+
+`create` shows the key once: at a terminal with a warning, and down a pipe alone on stdout, so it goes straight
+into a secret store (what it made and the warning are on stderr). `--json` carries it only with `--show-secret`;
+without the flag it makes nothing (`secret_destination_required`).
+Accounts keeps only its hash. Like a change to members, it needs a recent sign-in.
 
 ## Credits
 
