@@ -1526,8 +1526,8 @@ def test_keys_revoke_by_name_or_id_asks_first_and_needs_yes_away_from_a_terminal
 
 @respx.mock
 def test_keys_create_puts_the_key_nowhere_an_agent_reads_it_unless_told(monkeypatch, capsys):
-    """Neither a --json answer nor a terminal gets the key by default, and then nothing is made: a key nobody
-    received would be a key nobody can use."""
+    """A --json answer never carries the key by default, and then nothing is made: a key nobody received would be
+    a key nobody can use. A terminal, a person, is shown it once with the warning."""
     config.save({"token": "tok"})
     respx.get(f"{A}/keys/orgs").respond(json=[KEYED])
     post = respx.post(f"{A}/keys/orgs/acme").respond(json={**KEY, "id": "key_2", "name": "ci", "key": "mai_sk_s3cret"})
@@ -1536,11 +1536,12 @@ def test_keys_create_puts_the_key_nowhere_an_agent_reads_it_unless_told(monkeypa
     error = json.loads(got.out)["error"]
     assert error["code"] == "secret_destination_required" and "mai_sk_" not in got.out + got.err
     assert error["next_step"] == "kennet keys create ci | gh secret set METAPHI_API_KEY" and post.call_count == 0
-    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)   # a terminal: an agent's tool output, often
-    assert cli.main(["keys", "create", "ci"]) == cli.FAILED and post.call_count == 0
-    assert "mai_sk_" not in capsys.readouterr().out
-    assert cli.main(["keys", "create", "ci", "--show-secret"]) == 0 and post.call_count == 1
-    assert capsys.readouterr().out == "mai_sk_s3cret\n"
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)   # a terminal is a person: shown, with the warning
+    assert cli.main(["keys", "create", "ci"]) == 0 and post.call_count == 1
+    got = capsys.readouterr()
+    assert got.out == "mai_sk_s3cret\n" and "not shown again" in got.err and "Store it now" in got.err
+    assert cli.main(["keys", "create", "ci", "--json", "--show-secret"]) == 0 and post.call_count == 2
+    assert json.loads(capsys.readouterr().out)["key"] == "mai_sk_s3cret"
 
 
 @respx.mock

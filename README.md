@@ -227,7 +227,7 @@ but for the last:
 | `not_manager` | `kennet org members` or `kennet keys` by a person in the organization who is not its owner or admin; the message says their role | `null` |
 | `confirmation_required` | `kennet keys revoke` away from a terminal, or under `--json`, without `--yes` | the same revoke, by id, with `--yes` |
 | `no_key`, `ambiguous_key` | `kennet keys revoke` names no live key, or a name several live keys share | `kennet keys list`; the revoke of one by id |
-| `secret_destination_required` | `kennet keys create` at a terminal or with `--json`, without `--show-secret`: nothing is made | the pipe form |
+| `secret_destination_required` | `kennet keys create --json` without `--show-secret`: nothing is made | the pipe form |
 | `name_taken`, `scope_not_held`, `too_many_keys` | `kennet keys create` with a name a live key holds, a scope the organization does not hold, or at its cap of live keys | `null`; `null`; `kennet keys list` |
 | `test_runs_used` | `--test` once the organization's free test run is spent (exit 1) | the same `kennet twin <file>` and flags, live; `--api-key` and `--key` are left out |
 | `no_invitation` | `kennet org join` found no open invitation from that organization: it expired or was taken back | `null` |
@@ -311,9 +311,9 @@ kennet keys create github-ci | gh secret set METAPHI_API_KEY   # all the org hol
 kennet keys revoke github-ci                    # by name or id; asks first at a terminal, --yes elsewhere
 ```
 
-`create` prints the key once, alone on stdout, and only down a pipe, so it goes straight into a secret store;
-what it made and the warning are on stderr. At a terminal, or with `--json`, it makes nothing
-(`secret_destination_required`) unless `--show-secret` says to show the key there.
+`create` shows the key once: at a terminal with a warning, and down a pipe alone on stdout, so it goes straight
+into a secret store (what it made and the warning are on stderr). `--json` carries it only with `--show-secret`;
+without the flag it makes nothing (`secret_destination_required`).
 Accounts keeps only its hash. Like a change to members, it needs a recent sign-in.
 
 ## Credits

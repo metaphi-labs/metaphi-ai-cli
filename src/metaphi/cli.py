@@ -651,19 +651,19 @@ def _no_keys_yet(o: dict) -> accounts.Error:
 
 
 def _secret_goes(a: argparse.Namespace) -> str:
-    """Where `create` may put the key, decided before it is made, so no key is made that nobody receives: down a
-    pipe (stdout not a terminal, no --json), or anywhere with --show-secret. Never into a JSON answer or onto a
-    terminal by default: an agent reads both, and its transcript keeps them."""
-    if a.show_secret:
-        return "shown"
-    if not a.json and not sys.stdout.isatty():
-        return "piped"
-    e = accounts.Error("the key is printed only down a pipe into a secret store, or with --show-secret; nothing "
-                       "was made", code="secret_destination_required")
-    e.next_step = f"kennet keys create {shlex.quote(a.name)} | gh secret set METAPHI_API_KEY"
-    e.advice = ("pipe it into your secret store, as the next step does; or, to read it yourself once, add "
-                "--show-secret")
-    raise e
+    """Where `create` puts the key, decided before it is made, so no key is made that nobody receives: onto a
+    terminal (a person, with the shown-once warning, as gh, stripe and vercel do), down a pipe alone (stdout not a
+    terminal, no --json), or into the --json answer only with --show-secret. A JSON answer is what an agent reads,
+    so without the flag nothing is made."""
+    if a.json:
+        if a.show_secret:
+            return "shown"
+        e = accounts.Error("--json never carries the key unless --show-secret says to; nothing was made",
+                           code="secret_destination_required")
+        e.next_step = f"kennet keys create {shlex.quote(a.name)} | gh secret set METAPHI_API_KEY"
+        e.advice = "pipe it into your secret store, as the next step does, with no --json"
+        raise e
+    return "shown" if sys.stdout.isatty() else "piped"
 
 
 def cmd_keys_create(a: argparse.Namespace) -> None:
@@ -906,8 +906,8 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--test", action="store_true", help="a test key (mai_sk_test_): free, capped, kept apart from live")
     c.add_argument("--scope", action="append", metavar="SCOPE", help="a scope it holds; repeatable (default: all the "
                    "organization holds)")
-    c.add_argument("--show-secret", action="store_true", help="print the key at a terminal, or in the --json answer; "
-                   "without it the key goes only down a pipe")
+    c.add_argument("--show-secret", action="store_true", help="put the key in the --json answer (without it, "
+                   "--json makes nothing)")
     c.set_defaults(fn=cmd_keys_create)
     r = verbs.add_parser("revoke", help="stop a key working, within a minute; its record stays")
     r.add_argument("key", metavar="<name|id>", help="a live key's name, or a key's id (key_...)")

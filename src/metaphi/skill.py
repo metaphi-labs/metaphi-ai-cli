@@ -356,18 +356,18 @@ kennet keys list --json                     # {{"org", "keys": [{{"id", "name", 
 kennet keys revoke github-ci --yes --json   # by name or id (key_...); {{"org", "id", ..., "status": "revoked" or "already_revoked"}}
 ```
 
-Create a key only in the pipe form, straight into the secret store that keeps it, never with `--json` and never
-with `--show-secret`:
+Create a key only in the pipe form, straight into the secret store that keeps it, never with `--json`:
 
     kennet keys create github-ci | gh secret set METAPHI_API_KEY --repo acme/app
 
 - You never read, print or hold the key: it goes from `kennet` into the store and nowhere else, so it is never in
-  your output or the transcript. stdout carries the key alone; what was made (name, id, last four) is on stderr,
-  which is what you read and tell the user. `--test` makes a test key. Another store works the same way, as long
-  as it reads the secret from stdin (`vercel env add METAPHI_API_KEY production`, `fly secrets import`); if the
-  user's store cannot, tell them to run `kennet keys create <name> --show-secret` themselves, at their terminal.
-- Without a pipe the CLI makes nothing: `secret_destination_required`, `next_step` the pipe form. Never answer it
-  by adding `--show-secret` yourself.
+  your output or the transcript. Down a pipe stdout carries the key alone; what was made (name, id, last four) is
+  on stderr, which is what you read and tell the user. `--test` makes a test key. Another store works the same
+  way, as long as it reads the secret from stdin (`vercel env add METAPHI_API_KEY production`, `fly secrets
+  import`); if the user's store cannot, tell them to run `kennet keys create <name>` themselves, at their
+  terminal, where it is shown to them once.
+- `--json` never carries the key unless `--show-secret` is given, and without it nothing is made:
+  `secret_destination_required`, `next_step` the pipe form. Never add `--show-secret` yourself.
 - A key holds everything the organization holds unless `--scope <scope>` (repeatable) names less. `owner`
   `"cli"` marks a key `kennet login` handed a terminal; `service` is one made here or in the console.
 - `revoke` stops the key within a minute. At a terminal it asks first; away from one, and under `--json`, it needs
