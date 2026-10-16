@@ -289,7 +289,14 @@ def call(method: str, path: str, **kw: Any) -> Any:
         config.save(cfg)
         raise need(_said(r), "step_up_required", "kennet login")
     if r.status_code == 401:
-        raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login")
+        try:
+            r.json()
+        except ValueError:   # not accounts' answer: the sign-in is what a 401 is about
+            raise need("your sign-in has ended; run `kennet login`", "not_signed_in", "kennet login") from None
+        # accounts' own sentence and code (`not_cli_client`, or none), never a guess that the sign-in ended
+        e = need(_said(r), _code(r), "kennet login")
+        e.status = 401
+        raise e
     if r.status_code >= 400:
         raise _refused(r)   # the server's code, when its refusal carries one
     try:

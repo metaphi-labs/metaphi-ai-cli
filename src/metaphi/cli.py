@@ -4,7 +4,7 @@
     kennet org create "Acme"            make your organization, if you are in none; Metaphi AI approves it
     kennet org join acme                accept the invitation an organization sent you; its keys come with it
     kennet org members                  its members; `add`, `role`, `remove` change them (owners and admins)
-    kennet keys create github-ci        a service key for CI, printed once; `list`, `revoke` (owners and admins)
+    kennet keys create ci | ...         a service key for CI, piped into its secret; `list`, `revoke`
     kennet twin trace.json              twin a trace with that key
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
@@ -650,7 +650,24 @@ def _no_keys_yet(o: dict) -> accounts.Error:
     return accounts.Error(f"{o['id']} holds no access a key could carry yet; ask Metaphi AI for it", code="no_access")
 
 
+def _secret_goes(a: argparse.Namespace) -> str:
+    """Where `create` may put the key, decided before it is made, so no key is made that nobody receives: down a
+    pipe (stdout not a terminal, no --json), or anywhere with --show-secret. Never into a JSON answer or onto a
+    terminal by default: an agent reads both, and its transcript keeps them."""
+    if a.show_secret:
+        return "shown"
+    if not a.json and not sys.stdout.isatty():
+        return "piped"
+    e = accounts.Error("the key is printed only down a pipe into a secret store, or with --show-secret; nothing "
+                       "was made", code="secret_destination_required")
+    e.next_step = f"kennet keys create {shlex.quote(a.name)} | gh secret set METAPHI_API_KEY"
+    e.advice = ("pipe it into your secret store, as the next step does; or, to read it yourself once, add "
+                "--show-secret")
+    raise e
+
+
 def cmd_keys_create(a: argparse.Namespace) -> None:
+    goes = _secret_goes(a)
     o, held = _org_keys(a)
     grants = list(o.get("grants") or [])
     if not grants:
@@ -671,25 +688,31 @@ def cmd_keys_create(a: argparse.Namespace) -> None:
         e.code, e.next_step = "too_many_keys", "kennet keys list"   # accounts' cap on live service keys
         e.advice = "revoke a key the organization no longer uses (kennet keys revoke <name>), then create this one"
         raise
-    got = {"org": o["id"], **_key(made), "key": made["key"]}
-    warn = ("Save it now: it is not shown again. Put it straight into your secret store, e.g. "
-            f"`kennet keys create {shlex.quote(a.name)} | gh secret set METAPHI_API_KEY`")
-    said = (f"Created {'test' if a.test else 'live'} key {made['name']} ({made['id']}, {made['hint']}) for {o['id']}: "
-            f"{', '.join(made.get('scopes') or scopes)}")
-    print(said, file=sys.stderr)   # what it is and the warning on stderr; stdout is the key alone, so it pipes
-    if a.json:
-        got["warning"] = "the key is shown once: store it now; accounts keeps only its hash"
-        print(json.dumps(got, indent=2))
-    else:
+    if not a.json:   # the key first, before anything that reads the answer could fail and hide it
         print(made["key"])
-    print(warn, file=sys.stderr)
+    got = {"org": o["id"], **_key(made)}
+    said = (f"Created {'test' if a.test else 'live'} key {made.get('name') or a.name} ({made.get('id') or '?'}, "
+            f"{made.get('hint') or '?'}) for {o['id']}: {', '.join(made.get('scopes') or scopes)}")
+    print(said, file=sys.stderr)   # what it is and the warning on stderr; stdout is the key alone
+    if a.json:   # --show-secret: the one JSON answer that carries the key
+        print(json.dumps({**got, "key": made["key"], "warning": "shown once: accounts keeps only its hash"},
+                         indent=2))
+    print("It is not shown again; accounts keeps only its hash." + (" Store it now." if goes == "shown" else ""),
+          file=sys.stderr)
 
 
 def _target(held: list[dict], said: str) -> dict:
-    """The key `revoke` names: by id, or by the name of a live key."""
-    if by_id := next((k for k in held if k["id"] == said), None):
+    """The key `revoke` names: by id, or by the name of a live key; a word that is both, of different keys, is
+    neither."""
+    by_id = next((k for k in held if k["id"] == said), None)
+    named = [k for k in held if k["name"] == said and not k["revoked"] and k is not by_id]
+    if by_id is not None and not named:
         return by_id
-    named = [k for k in held if k["name"] == said and not k["revoked"]]
+    if by_id is not None:
+        e = accounts.Error(f"{said!r} is the id of {by_id['name']} and the name of {named[0]['id']}; name one by "
+                           "the other's id", code="ambiguous_key")
+        e.next_step = "kennet keys list"
+        raise e
     if len(named) == 1:
         return named[0]
     if named:
@@ -776,7 +799,7 @@ examples:
   kennet org members                its members and open invitations (owners and admins)
   kennet org members add bob@acme.com --role admin   add a person; another domain gets an invitation link
   kennet keys list                  the organization's service keys (owners and admins)
-  kennet keys create github-ci      make a key for CI; printed once, alone on stdout
+  kennet keys create ci | gh secret set METAPHI_API_KEY   a key for CI, straight into its secret
   kennet keys revoke github-ci      stop it working; asks first at a terminal, --yes elsewhere
   kennet whoami                     who you are, your organization, its balance, the key in use
   kennet twin trace.json --test     a free test twin, written to trace.twin.json
@@ -883,6 +906,8 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--test", action="store_true", help="a test key (mai_sk_test_): free, capped, kept apart from live")
     c.add_argument("--scope", action="append", metavar="SCOPE", help="a scope it holds; repeatable (default: all the "
                    "organization holds)")
+    c.add_argument("--show-secret", action="store_true", help="print the key at a terminal, or in the --json answer; "
+                   "without it the key goes only down a pipe")
     c.set_defaults(fn=cmd_keys_create)
     r = verbs.add_parser("revoke", help="stop a key working, within a minute; its record stays")
     r.add_argument("key", metavar="<name|id>", help="a live key's name, or a key's id (key_...)")

@@ -1440,7 +1440,7 @@ def test_keys_list_shows_the_live_keys_and_never_a_secret(capsys):
 def test_a_plain_member_asking_for_keys_is_told_who_may(capsys):
     config.save({"token": "tok"})
     respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "name": "Acme", "role": "member", "grants": ["kennet:twin"]}])
-    for verb in (["list"], ["create", "ci"], ["revoke", "ci", "--yes"]):
+    for verb in (["list"], ["create", "ci", "--show-secret"], ["revoke", "ci", "--yes"]):
         assert cli.main(["keys", *verb, "--json"]) == cli.FAILED
         error = json.loads(capsys.readouterr().out)["error"]
         assert (error["code"], error["next_step"]) == ("not_manager", None)
@@ -1460,7 +1460,7 @@ def test_keys_create_prints_the_key_alone_on_stdout_once_with_a_warning(capsys):
     sent = json.loads(post.calls[0].request.content)
     assert sent == {"name": "deploy", "scopes": ["kennet:delivery", "kennet:twin"], "test": False}   # all it holds
     assert post.calls[0].request.headers["authorization"] == "Bearer tok"
-    assert cli.main(["keys", "create", "deploy", "--test", "--scope", "kennet:twin", "--json"]) == 0
+    assert cli.main(["keys", "create", "deploy", "--test", "--scope", "kennet:twin", "--json", "--show-secret"]) == 0
     got = json.loads(capsys.readouterr().out)
     assert got["key"] == "mai_sk_abcdefwxyz" and "shown once" in got["warning"] and got["id"] == "key_2"
     assert json.loads(post.calls[1].request.content) == {"name": "deploy", "scopes": ["kennet:twin"], "test": True}
@@ -1473,7 +1473,7 @@ def test_keys_create_refusals_carry_a_code_and_what_clears_them(capsys):
     post = respx.post(f"{A}/keys/orgs/acme")
 
     def error(*argv):
-        assert cli.main(["keys", "create", *argv, "--json"]) != 0
+        assert cli.main(["keys", "create", *argv, "--json", "--show-secret"]) != 0
         return json.loads(capsys.readouterr().out)["error"]
 
     assert error("github-ci")["code"] == "name_taken" and "kennet keys revoke key_1" in error("github-ci")["advice"]
@@ -1522,3 +1522,62 @@ def test_keys_revoke_by_name_or_id_asks_first_and_needs_yes_away_from_a_terminal
     respx.get(f"{A}/keys/orgs").respond(json=[{**KEYED, "keys": [KEY, {**KEY, "id": "key_9"}]}])
     got = (cli.main(["keys", "revoke", "github-ci", "--yes", "--json"]), json.loads(capsys.readouterr().out)["error"])
     assert got[0] == cli.FAILED and (got[1]["code"], got[1]["next_step"]) == ("ambiguous_key", "kennet keys revoke key_1")
+
+
+@respx.mock
+def test_keys_create_puts_the_key_nowhere_an_agent_reads_it_unless_told(monkeypatch, capsys):
+    """Neither a --json answer nor a terminal gets the key by default, and then nothing is made: a key nobody
+    received would be a key nobody can use."""
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[KEYED])
+    post = respx.post(f"{A}/keys/orgs/acme").respond(json={**KEY, "id": "key_2", "name": "ci", "key": "mai_sk_s3cret"})
+    assert cli.main(["keys", "create", "ci", "--json"]) == cli.FAILED
+    got = capsys.readouterr()
+    error = json.loads(got.out)["error"]
+    assert error["code"] == "secret_destination_required" and "mai_sk_" not in got.out + got.err
+    assert error["next_step"] == "kennet keys create ci | gh secret set METAPHI_API_KEY" and post.call_count == 0
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)   # a terminal: an agent's tool output, often
+    assert cli.main(["keys", "create", "ci"]) == cli.FAILED and post.call_count == 0
+    assert "mai_sk_" not in capsys.readouterr().out
+    assert cli.main(["keys", "create", "ci", "--show-secret"]) == 0 and post.call_count == 1
+    assert capsys.readouterr().out == "mai_sk_s3cret\n"
+
+
+@respx.mock
+def test_a_key_made_is_printed_even_when_the_answer_lacks_its_other_fields(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[KEYED])
+    respx.post(f"{A}/keys/orgs/acme").respond(json={"key": "mai_sk_only"})
+    assert cli.main(["keys", "create", "ci"]) == 0
+    got = capsys.readouterr()
+    assert got.out == "mai_sk_only\n" and "Created live key ci (?, ?) for acme" in got.err
+
+
+@respx.mock
+def test_a_401_with_the_servers_own_sentence_is_said_as_it_is(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/keys/orgs").respond(json=[KEYED])
+    post = respx.post(f"{A}/keys/orgs/acme")
+    post.respond(401, json={"detail": "confirm it's you: sign in again on the keys page (X-Id-Token)"})
+    assert cli.main(["keys", "create", "x", "--json", "--show-secret"]) == cli.AUTH
+    got = json.loads(capsys.readouterr().out)["error"]
+    assert (got["code"], got["next_step"]) == (None, "kennet login") and got["message"].startswith("confirm it's you")
+    post.respond(401, json={"detail": {"code": "not_cli_client", "message": "this sign-in is not the CLI's"}})
+    assert cli.main(["keys", "create", "x", "--json", "--show-secret"]) == cli.AUTH
+    got = json.loads(capsys.readouterr().out)["error"]
+    assert (got["code"], got["message"]) == ("not_cli_client", "this sign-in is not the CLI's")
+    post.respond(401, text="<html>gateway</html>")   # not accounts' answer: the sign-in, as before
+    assert cli.main(["keys", "create", "x", "--json", "--show-secret"]) == cli.AUTH
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "not_signed_in"
+
+
+@respx.mock
+def test_a_word_that_is_one_keys_id_and_anothers_name_is_ambiguous(capsys):
+    config.save({"token": "tok"})
+    shadow = {**KEY, "id": "key_7", "name": "key_1"}   # named like the other key's id
+    respx.get(f"{A}/keys/orgs").respond(json=[{**KEYED, "keys": [KEY, shadow]}])
+    gone = respx.delete(f"{A}/keys/orgs/acme/key_7").respond(json={**shadow, "revoked": 1})
+    assert cli.main(["keys", "revoke", "key_1", "--yes", "--json"]) == cli.FAILED
+    got = json.loads(capsys.readouterr().out)["error"]
+    assert (got["code"], got["next_step"]) == ("ambiguous_key", "kennet keys list") and "key_7" in got["message"]
+    assert cli.main(["keys", "revoke", "key_7", "--yes", "--json"]) == 0 and gone.call_count == 1

@@ -163,7 +163,8 @@ When the page does not get there:
 
 Servers and CI never sign in: an owner or admin makes the organization a service key, with `kennet keys create`
 (step 7) or in the console (https://app.metaphi.ai/console), and it is set as `METAPHI_API_KEY`, or saved on the
-machine by `kennet login --with-api-key`, which reads it from stdin. You never read the key.
+machine by `kennet login --with-api-key`, which reads it from stdin. You never read the key: `kennet keys
+create` pipes it straight into the store.
 
 ## 3. Twin a file
 
@@ -352,14 +353,21 @@ revoke one: its name, and for a revoke, that nothing still uses it.
 
 ```sh
 kennet keys list --json                     # {{"org", "keys": [{{"id", "name", "hint", "scopes", "livemode", "owner", "created_by", "created", "last_used", "revoked"}}]}}; --all adds revoked ones
-kennet keys create github-ci --json         # {{"org", "id", "name", "hint", "scopes", "livemode", "key", "warning"}}; --test for a test key
 kennet keys revoke github-ci --yes --json   # by name or id (key_...); {{"org", "id", ..., "status": "revoked" or "already_revoked"}}
 ```
 
-- `create` prints the key once; accounts keeps only its hash. Never read it, print it or put it in the chat.
-  Without `--json` the key is alone on stdout, so pipe it straight into where it is kept, as
-  `kennet keys create github-ci | gh secret set METAPHI_API_KEY` does; the warning goes to stderr. With `--json`
-  read only `id` and `hint`, and say where the user should store `key` themselves.
+Create a key only in the pipe form, straight into the secret store that keeps it, never with `--json` and never
+with `--show-secret`:
+
+    kennet keys create github-ci | gh secret set METAPHI_API_KEY --repo acme/app
+
+- You never read, print or hold the key: it goes from `kennet` into the store and nowhere else, so it is never in
+  your output or the transcript. stdout carries the key alone; what was made (name, id, last four) is on stderr,
+  which is what you read and tell the user. `--test` makes a test key. Another store works the same way, as long
+  as it reads the secret from stdin (`vercel env add METAPHI_API_KEY production`, `fly secrets import`); if the
+  user's store cannot, tell them to run `kennet keys create <name> --show-secret` themselves, at their terminal.
+- Without a pipe the CLI makes nothing: `secret_destination_required`, `next_step` the pipe form. Never answer it
+  by adding `--show-secret` yourself.
 - A key holds everything the organization holds unless `--scope <scope>` (repeatable) names less. `owner`
   `"cli"` marks a key `kennet login` handed a terminal; `service` is one made here or in the console.
 - `revoke` stops the key within a minute. At a terminal it asks first; away from one, and under `--json`, it needs
@@ -367,10 +375,13 @@ kennet keys revoke github-ci --yes --json   # by name or id (key_...); {{"org", 
   run it.
 - Errors: `not_manager` (the user is not an owner or admin; tell them, no command clears it), `step_up_required`
   (as above), `no_key` (no live key by that name or id; `kennet keys list`), `ambiguous_key` (several live keys
-  share the name; `next_step` names one by id), `name_taken` (a live key has that name; pick another or revoke
-  it), `scope_not_held` (the organization does not hold that scope), `too_many_keys` (it holds the most live keys
-  it may; revoke an unused one first), `awaiting_approval` and `no_access` (it holds nothing a key could carry
-  yet: step 1's table).
+  share the name, or the word is one key's id and another's name; name it by id from `kennet keys list`),
+  `name_taken` (a live key has that name; pick another or revoke it), `scope_not_held` (the organization does not
+  hold that scope), `too_many_keys` (it holds the most live keys it may; revoke an unused one first),
+  `already_revoked` (it was revoked meanwhile; nothing to do), `awaiting_approval` and `no_access` (it holds
+  nothing a key could carry yet: step 1's table). A refusal with `"type": "auth_error"` and another code, or
+  none (`not_cli_client`: the sign-in is not this CLI's), is the server's sentence: run `kennet login --json`
+  once (step 2), then the same command.
 
 ## 8. Author and check tasks
 
