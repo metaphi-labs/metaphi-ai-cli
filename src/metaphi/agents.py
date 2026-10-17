@@ -34,6 +34,11 @@ from typing import Any
 
 from metaphi import config, errors, skill
 
+try:
+    import tomllib
+except ImportError:   # Python 3.10
+    tomllib = None
+
 SERVER = "kennet"
 MCP_URL = "https://kennet.metaphi.ai/mcp/"
 NOT_PRESENT = "not on this machine"
@@ -109,7 +114,8 @@ _TOML = {
     "hum": f'[[mcp]]\nname = "{SERVER}"\nurl = "{URL}"\n',
 }
 _TOML_DECLARES = {
-    "codex": re.compile(rf'^\s*\[\s*mcp_servers\s*\.\s*"?{SERVER}"?\s*\]', re.MULTILINE),
+    "codex": re.compile(rf'^\s*(\[\s*mcp_servers\s*\.\s*"?{SERVER}"?\s*\]|"?{SERVER}"?\s*=|mcp_servers\s*\.\s*"?{SERVER}"?)',
+                        re.MULTILINE),
     "hum": re.compile(rf'^\s*name\s*=\s*"{SERVER}"\s*$', re.MULTILINE),
 }
 
@@ -221,9 +227,26 @@ def _json_remove(path: Path, key: str, entry: dict[str, Any]) -> bool:
     return True
 
 
+def _toml_declares(text: str, kind: str) -> bool | None:
+    """Whether a TOML config declares the server, in any of the shapes TOML allows; None when it does not parse.
+    Python 3.10 has no TOML reader: a table header or a name line is looked for instead."""
+    if tomllib is None:
+        return bool(_TOML_DECLARES[kind].search(text))
+    try:
+        doc = tomllib.loads(text)
+    except ValueError:
+        return None
+    if kind == "codex":
+        return isinstance(doc.get("mcp_servers"), dict) and SERVER in doc["mcp_servers"]
+    return any(isinstance(m, dict) and m.get("name") == SERVER for m in doc.get("mcp") or [])
+
+
 def _toml_add(path: Path, kind: str, u: str) -> str:
     text = path.read_text() if path.exists() else ""
-    if _TOML_DECLARES[kind].search(text):
+    declares = _toml_declares(text, kind)
+    if declares is None:
+        return f"{path} is not valid TOML; add {_TOML[kind].replace(URL, u)!r} to it by hand"
+    if declares:
         return "present"
     pad = "" if not text or text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,7 +294,7 @@ def _add_mcp(h: Harness, project: bool, u: str) -> tuple[str, str]:
     if cmd is None:
         return "skipped", f"`{h.commands[0]}` is not on the PATH; run `kennet agents install` again where it is"
     try:
-        if _declared(h, cmd, None):   # Codex's, Gemini's and Copilot's `add` would replace it without a word
+        if _declared(h, cmd, None):   # Gemini's and Copilot's `add` would replace it without a word
             return "present", f"a server named {SERVER} is declared in {h.title} already"
         ran = _run(cmd, h.add, u)
     except (OSError, subprocess.SubprocessError) as e:

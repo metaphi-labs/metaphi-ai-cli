@@ -163,3 +163,12 @@ def test_list_reads_the_files_alone(home, capsys):
     assert code == 0 and rows["hum"] == {"harness": "hum", "present": True, "skill_state": "written",
                                          "mcp": "installed", "skill": str(home / "home/.hum/skills/kennet/SKILL.md")}
     assert rows["claude"]["present"] is False and rows["claude"]["mcp"] == "absent"
+
+
+def test_a_codex_config_that_declares_kennet_in_another_shape_is_left_as_it_is(home, capsys):
+    (home / "home" / ".codex").mkdir()
+    cfg = home / "home" / ".codex/config.toml"
+    cfg.write_text('[mcp_servers]\nkennet = { url = "https://elsewhere.example/mcp/" }\n')
+    code, got = _run(capsys, "install", "--harness", "codex")
+    assert code == 0 and got["harnesses"][0]["mcp"] == "present"
+    assert "[mcp_servers.kennet]" not in cfg.read_text()
