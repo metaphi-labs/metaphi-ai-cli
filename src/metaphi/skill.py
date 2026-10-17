@@ -1,14 +1,12 @@
-"""The Kennet skill, which teaches a coding agent this CLI: `kennet skill install` puts it where Claude Code reads skills.
+"""The Kennet skill, which teaches a coding agent this CLI: `kennet agents install` puts it where each harness reads
+skills (metaphi/agents.py).
 
 The file installed is a stub: when to reach for the CLI, and one instruction, run `kennet skill show`. The guide
 itself is printed by the binary, so it is always the guide of the version installed and never goes stale on disk.
 Kept as text in this module, not a data file, so the one-file binary carries it."""
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from metaphi import __version__, config
+from metaphi import __version__
 
 NAME = "kennet"   # the skill is Kennet's, as the CLI is
 MARK = "<!-- written by `kennet skill install`; edits are overwritten -->"
@@ -385,11 +383,24 @@ Create a key only in the pipe form, straight into the secret store that keeps it
 
 ## 8. Author and check tasks
 
-Authoring runs through Kennet's MCP tools, not this CLI. Connect them once, then sign in from `/mcp`:
+Authoring runs through Kennet's MCP tools, not this CLI. Connect them once, for every coding agent on this
+machine, then sign in:
 
 ```sh
-claude mcp add --transport http kennet https://kennet.metaphi.ai/mcp/
+kennet agents install --json
 ```
+
+Each row is one harness (`claude`, `codex`, `hum`, `gemini`, `copilot`, `cursor`, `opencode`). `mcp` `added` or
+`installed`: the server is registered and `sign_in` is how to sign in to it (a command to run, such as
+`codex mcp login kennet`, or where in the agent to do it); tell the user, since the browser page is theirs.
+`present`: a server named kennet was there already and is left as it is. `skipped`: `mcp_detail` says why.
+`skill_state` `kept`: a skill file there that kennet did not write; `--force` replaces it, only if the user says
+so. `next_step` is the first `sign_in` that is a command. `--harness <name>` (repeatable) picks harnesses;
+`--project` writes the root of this repository's files instead, to commit (`not_a_repository` outside one).
+`no_agent_found`: none is on this machine; name one with `--harness`. `nothing_installed` (exit 1): no harness got
+either piece; each row beside the error says why. `kennet agents remove` takes away what install added, and only
+that. A tool call that says the server needs a sign-in: the same `sign_in`. Run `kennet agents install` when the
+user asks for it, never on your own: it changes their agents' configuration.
 
 The loop: write a Harbor bundle, check it (`run_task_ci_checks`), run models on it (`run_harbor_tasks`), read
 the rollouts (`harbor_runs`, `harbor_run_report`, `harbor_rollouts`), fix, repeat. Long calls return a task:
@@ -415,33 +426,3 @@ poll `get_task`.
   the finding and what was tried, and tell the user.
 """
 
-
-def directory(project: bool = False) -> Path:
-    """Where Claude Code reads this skill: the person's skills, or this project's with `project`."""
-    base = Path.cwd() / ".claude" if project else Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-    return base / "skills" / NAME
-
-
-def install(project: bool = False, force: bool = False) -> Path:
-    """Write the stub; a file there that this command did not write is left alone unless `force`."""
-    path = directory(project) / "SKILL.md"
-    if path.exists() and MARK not in path.read_text(errors="replace") and not force:
-        raise config.Error(f"{path} exists and was not written by kennet; --force replaces it")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(STUB)
-    return path
-
-
-def remove(project: bool = False) -> Path | None:
-    """Take the stub away, if this command wrote it; the path removed, or None when there was nothing of ours."""
-    path = directory(project) / "SKILL.md"
-    if not path.exists() or MARK not in path.read_text(errors="replace"):
-        return None
-    path.unlink()
-    if not any(path.parent.iterdir()):
-        path.parent.rmdir()
-    return path
-
-
-def installed() -> bool:
-    return any((directory(p) / "SKILL.md").exists() for p in (False, True))

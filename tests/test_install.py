@@ -16,7 +16,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "install.sh"
 pytestmark = pytest.mark.skipif(os.name != "posix" or shutil.which("ssh-keygen") is None,
                                 reason="POSIX sh and ssh-keygen")
 TOOLS = ("sh", "uname", "sysctl", "curl", "wget", "sha256sum", "shasum", "perl", "mktemp", "rm", "grep", "head", "cut",
-         "tar", "gzip", "mkdir", "cp", "chmod", "mv", "ln", "ssh-keygen", "cat", "echo")
+         "tar", "gzip", "mkdir", "cp", "chmod", "mv", "ln", "ssh-keygen", "cat", "echo", "awk")
 
 
 def _target() -> str:
@@ -49,7 +49,7 @@ def _release(d: Path, key: Path, version: str, bad: bool = False) -> None:
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
     stub = d / "kennet"
-    stub.write_text(f'#!/bin/sh\ncase "$1" in skill|__prune) exit 0 ;; esac\necho "kennet {version}"\n')
+    stub.write_text(f'#!/bin/sh\ncase "$1 ${2:-}" in "__prune ") exit 0 ;; "agents list") echo "claude    here" ; exit 0 ;; "agents install") echo "Claude Code: skill" ; echo "$*" >> "$HOME/agents.log" ; exit 0 ;; esac\necho "kennet {version}"\n')
     stub.chmod(0o755)
     name = f"kennet_{version}_{_target()}.tar.gz"
     with tarfile.open(d / name, "w:gz") as t:
@@ -62,7 +62,7 @@ def _release(d: Path, key: Path, version: str, bad: bool = False) -> None:
 
 
 def _bare_path(tmp_path: Path) -> str:
-    """A PATH with only what install.sh calls: no `claude` on it, whatever this machine has."""
+    """A PATH with only what install.sh calls: no coding agent's command on it, whatever this machine has."""
     d = tmp_path / "tools"
     d.mkdir(exist_ok=True)
     for tool in TOOLS:
@@ -71,15 +71,18 @@ def _bare_path(tmp_path: Path) -> str:
     return str(d)
 
 
-def _install(tmp_path: Path, key: Path, release: Path, path: str | None = None, claude: bool = False):
+def _install(tmp_path: Path, key: Path, release: Path, path: str | None = None, claude: bool = False,
+             **env_extra: str):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     env = {"HOME": str(home), "PATH": path or _bare_path(tmp_path), "SHELL": "/bin/zsh",
            "KENNET_RELEASE_URL": release.as_uri(), "KENNET_INSTALL_DIR": str(tmp_path / "bin")}
+    env.update(env_extra)
     if claude:
         (home / ".claude").mkdir(exist_ok=True)
+    # a session of its own: no terminal, as under `curl | sh` in a container, whatever terminal runs the tests
     return subprocess.run(["sh", str(_script(tmp_path, key))], env=env, capture_output=True, text=True, timeout=60,
-                          check=False)
+                          check=False, start_new_session=True)
 
 
 def _run(exe: Path) -> str:
@@ -98,7 +101,7 @@ def test_install_puts_a_version_behind_a_symlink_and_says_the_path_line(tmp_path
     assert f"Installed kennet 0.1.16 to {exe}" in got.stdout
     assert got.stdout.count("Signature verified (Metaphi AI release key)") == 1
     assert f'export PATH="{tmp_path / "bin"}:$PATH"' in got.stdout and ".zshrc" in got.stdout
-    assert got.stdout.splitlines()[-1] == "Next: run `kennet login`"
+    assert got.stdout.splitlines()[-2] == "Next: run `kennet login`"
     assert [p.name for p in exe.parent.iterdir()] == ["kennet"]
 
 
@@ -114,7 +117,24 @@ def test_running_it_again_upgrades_and_leaves_the_old_version_for_whoever_runs_i
     assert _run(tmp_path / "bin" / "kennet") == "kennet 0.1.17\n"
     assert (versions / "0.1.16" / "kennet").read_bytes() == old   # a process running 0.1.16 keeps its file
     assert "not on your PATH" not in got.stdout
-    assert got.stdout.splitlines()[-1] == "Ask Claude: log me into Kennet"
+    # no terminal to ask at: the agents' configs are not touched, and the command that does it is said
+    assert got.stdout.splitlines()[-2:] == ["Next: run `kennet login`",
+                                            "To set Kennet up in your coding agents: kennet agents install"]
+    assert not (tmp_path / "home" / "agents.log").exists()
+
+
+def test_agents_are_set_up_only_when_asked_for_ahead_of_time(tmp_path, key):
+    release = tmp_path / "release"
+    _release(release, key, "0.1.16")
+    got = _install(tmp_path, key, release, KENNET_SETUP_AGENTS="1")
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.splitlines()[-2:] == ["Claude Code: skill", "Ask your coding agent: log me into Kennet"]
+    assert (tmp_path / "home" / "agents.log").read_text() == "agents install\n"
+    for env in ({"CI": "true"}, {"KENNET_SETUP_AGENTS": "0"}):
+        (tmp_path / "home" / "agents.log").unlink(missing_ok=True)
+        got = _install(tmp_path, key, release, **env)
+        assert got.returncode == 0 and not (tmp_path / "home" / "agents.log").exists()
+        assert got.stdout.splitlines()[-1] == "To set Kennet up in your coding agents: kennet agents install"
 
 
 def test_a_plain_file_install_is_migrated_to_the_symlink(tmp_path, key):
@@ -152,3 +172,39 @@ def test_an_unsigned_or_mismatched_release_is_refused_and_nothing_is_installed(t
 def test_install_sh_and_the_cli_carry_the_same_release_key():
     from metaphi import signature
     assert f'PUBLIC_KEY="{signature.PUBLIC_KEY}"' in SCRIPT.read_text()
+
+
+@pytest.mark.parametrize("answer", ["y", ""])
+def test_at_a_terminal_it_asks_and_a_plain_return_is_no(tmp_path, key, answer):
+    import fcntl
+    import pty
+    import termios
+
+    release = tmp_path / "release"
+    _release(release, key, "0.1.16")
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {"HOME": str(home), "PATH": _bare_path(tmp_path), "SHELL": "/bin/zsh",
+           "KENNET_RELEASE_URL": release.as_uri(), "KENNET_INSTALL_DIR": str(tmp_path / "bin")}
+    master, slave = pty.openpty()
+
+    def own_terminal() -> None:
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    p = subprocess.Popen(["sh", str(_script(tmp_path, key))], env=env, stdin=slave, stdout=slave, stderr=slave,
+                         preexec_fn=own_terminal)   # noqa: PLW1509 - the terminal has to be the child's own
+    os.close(slave)
+    out = b""
+    while b"[y/N]" not in out:
+        out += os.read(master, 4096)
+    os.write(master, f"{answer}\n".encode())
+    try:
+        while chunk := os.read(master, 4096):
+            out += chunk
+    except OSError:   # the other end closed
+        pass
+    assert p.wait(timeout=60) == 0
+    said = out.decode()
+    assert "Set Kennet up in your coding agents (claude)?" in said
+    assert (home / "agents.log").exists() == (answer == "y")

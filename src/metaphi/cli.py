@@ -35,7 +35,7 @@ from pathlib import Path
 
 import httpx
 
-from metaphi import __version__, accounts, config, errors, skill, update
+from metaphi import __version__, accounts, agents, config, errors, skill, update
 
 FAILED, USAGE, AUTH, LATER, UPGRADE = 1, 2, 3, 4, 5
 
@@ -93,7 +93,8 @@ def _signed_in(a: argparse.Namespace, got: dict, joined: dict | None = None) -> 
              said, f"Signed in as {got.get('email')}.",
              f"Ready for {got.get('org')}: its live key and test key are saved on this machine.",
              "Next: kennet twin <file>   (--test for a free test run)",
-             "" if skill.installed() else "Working through Claude Code? `kennet skill install` teaches it this CLI.")
+             "" if agents.skill_installed() else "Working through a coding agent? `kennet agents install` teaches it "
+             "this CLI.")
         return
     # signed in, and handed no key: the same refusal `whoami` and `twin` make, with nothing here left to run
     why = got.get("no_api_key") or "the server sent none"
@@ -780,15 +781,38 @@ def cmd_update(a: argparse.Namespace) -> None:
     _out(a, got, said)
 
 
-def cmd_skill_install(a: argparse.Namespace) -> None:
-    path = skill.install(a.project, a.force)
-    _out(a, {"path": str(path), "next_step": "kennet skill show"},
-         f"wrote {path}", "Claude Code now reaches for `kennet` when a trace needs twinning; start a new session.")
+_SAID = {"added": "MCP server added", "installed": "MCP server already added by kennet",
+         "present": "a server named kennet was there already; left as it is"}
 
 
-def cmd_skill_remove(a: argparse.Namespace) -> None:
-    path = skill.remove(a.project)
-    _out(a, {"removed": str(path) if path else None}, f"removed {path}" if path else "no kennet skill there")
+def cmd_agents_install(a: argparse.Namespace) -> None:
+    rows = agents.install(a.harness, a.project, a.force)
+    lines = []
+    for r in rows:
+        h = agents.BY_NAME[r["harness"]]
+        skill_said = {"written": f"skill at {r['skill']}",
+                      "kept": f"skill: {r['skill']} is not kennet's; left as it is (--force replaces it)"}.get(
+            r["skill_state"]) or f"skill skipped: {r.get('skill_detail')}"
+        mcp_said = _SAID.get(r["mcp"]) or f"MCP server skipped: {r['mcp_detail']}"
+        lines.append(f"{h.title}: {skill_said}; {mcp_said}" + (f"; sign in: {r['sign_in']}" if r.get("sign_in")
+                                                              else ""))
+    # the first sign-in a command does; each row says its own
+    first = next((r["sign_in"] for r in rows if r.get("sign_in") and r["sign_in"] == agents.BY_NAME[
+        r["harness"]].sign_in), None)
+    _out(a, {"harnesses": rows, "next_step": first}, *lines, "Start a new session in each for the skill to load.")
+
+
+def cmd_agents_remove(a: argparse.Namespace) -> None:
+    got = agents.remove(a.harness, a.project)
+    _out(a, got, *(f"removed {x}" for x in got["removed"]), *(f"left {x['target']}: {x['why']}" for x in got["left"]),
+         "" if got["removed"] or got["left"] else "nothing of kennet's there")
+
+
+def cmd_agents_list(a: argparse.Namespace) -> None:
+    rows = agents.status(a.project)
+    _out(a, {"harnesses": rows},
+         *(f"{r['harness']:<9} {'here' if r['present'] else '-':<5}"
+           + (f" skill {r['skill_state']:<8} mcp {r['mcp']}" if "skill" in r else "") for r in rows))
 
 
 EXAMPLES = """\
@@ -813,7 +837,7 @@ examples:
   kennet registry login             sign docker in to pull its images, for an hour
 
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
-  kennet skill install              teach Claude Code this CLI (once per machine)
+  kennet agents install             teach every coding agent here this CLI, and connect Kennet's MCP server
   kennet skill show                 the guide an agent follows, for this version
   kennet login --json               prints the page and the code, and returns; never opens a browser
   kennet login --complete           waits for the approval, saves the keys
@@ -825,6 +849,25 @@ exit status: 0 done, 1 failed, 2 usage, 3 sign-in or key needed, 4 try the same 
 
 def _json_flag(s: argparse.ArgumentParser) -> None:
     s.add_argument("--json", action="store_true", help="print the result as JSON on stdout")
+
+
+def _harness_flags(v: argparse.ArgumentParser) -> None:
+    v.add_argument("--harness", action="append", choices=agents.NAMES, metavar="<name>",
+                   help="only this harness (repeatable): " + ", ".join(agents.NAMES) + "; default every one here")
+    v.add_argument("--project", action="store_true", help="into this repository's files instead (.agents/skills, "
+                   ".mcp.json and each harness's own), to commit for a team")
+    _json_flag(v)
+
+
+def _agents_install(v: argparse.ArgumentParser) -> None:
+    _harness_flags(v)
+    v.add_argument("--force", action="store_true", help="replace a skill file there that kennet did not write")
+    v.set_defaults(fn=cmd_agents_install)
+
+
+def _agents_remove(v: argparse.ArgumentParser) -> None:
+    _harness_flags(v)
+    v.set_defaults(fn=cmd_agents_remove)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1020,21 +1063,25 @@ def parser() -> argparse.ArgumentParser:
     _pull(sub.add_parser("pull", help="the same as `delivery pull`"))
     _verify(sub.add_parser("verify", help="the same as `delivery verify`"))
 
-    s = sub.add_parser("skill", help="the Kennet skill: teach a coding agent (Claude Code) this CLI")
+    s = sub.add_parser("agents", help="Kennet in your coding agents: the skill and Kennet's MCP server, in each "
+                       "harness here (" + ", ".join(agents.NAMES) + ")")
     s.set_defaults(fn=lambda a, s=s: s.print_help())
     verbs = s.add_subparsers(dest="verb", metavar="<verb>")
-    v = verbs.add_parser("install", help="write the skill where Claude Code reads it (~/.claude/skills/kennet)")
-    v.add_argument("--project", action="store_true", help="into this directory's .claude/skills instead, to commit "
-                   "for a team")
-    v.add_argument("--force", action="store_true", help="replace a skill file there that kennet did not write")
+    _agents_install(verbs.add_parser("install", help="write the skill and register the server in each harness on "
+                                     "this machine"))
+    _agents_remove(verbs.add_parser("remove", help="take away what install added, and only that"))
+    v = verbs.add_parser("list", help="each harness: here or not, the skill, the server")
+    v.add_argument("--project", action="store_true", help="this repository's files")
     _json_flag(v)
-    v.set_defaults(fn=cmd_skill_install)
+    v.set_defaults(fn=cmd_agents_list)
+
+    s = sub.add_parser("skill", help="the Kennet skill: the guide a coding agent follows")
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
+    verbs = s.add_subparsers(dest="verb", metavar="<verb>")
     verbs.add_parser("show", help="print the guide an agent follows, for this version").set_defaults(
         fn=lambda a: print(skill.GUIDE, end=""))
-    v = verbs.add_parser("remove", help="take the skill away")
-    v.add_argument("--project", action="store_true")
-    _json_flag(v)
-    v.set_defaults(fn=cmd_skill_remove)
+    _agents_install(verbs.add_parser("install", help="the same as `agents install`"))
+    _agents_remove(verbs.add_parser("remove", help="the same as `agents remove`"))
 
     s = sub.add_parser("update", help="install the newest release now (the release binary), or print the command "
                        "that upgrades this install")

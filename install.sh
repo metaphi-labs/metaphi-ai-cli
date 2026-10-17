@@ -11,6 +11,7 @@
 #
 #   KENNET_INSTALL_DIR   where the kennet command goes (default ~/.local/bin)
 #   KENNET_RELEASE_URL   where the release's files are (default: the latest GitHub release)
+#   KENNET_SETUP_AGENTS  1: set Kennet up in the coding agents here without asking; 0: do not ask
 
 # The release key (src/metaphi/signature.py carries the same line). Empty: nothing verifies, nothing is installed.
 PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGM4JSNzis6zZVswYoxPTh6MnN4TfZnwY8PWFIbaj+JO kennet-release"
@@ -118,12 +119,27 @@ main() {
       ;;
   esac
 
+  # Kennet in the coding agents here (the skill, and Kennet's MCP server in each one's config) changes their
+  # configuration, so it is asked for, never done on the side: not in CI, not where there is no terminal to ask at
+  # (a container or a sandbox image that installs kennet), and only on a yes. KENNET_SETUP_AGENTS=1 answers yes
+  # ahead of time, 0 no.
   say ""
-  if { command -v claude >/dev/null 2>&1 || [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" ]; } &&
-    "$DIR/kennet" skill install >/dev/null 2>&1; then
-    say "Ask Claude: log me into Kennet"
+  setup="${KENNET_SETUP_AGENTS:-}"
+  if [ -z "$setup" ] && [ -z "${CI:-}" ] && (: < /dev/tty) 2>/dev/null; then
+    found="$("$DIR/kennet" agents list 2>/dev/null | awk '$2 == "here" { printf "%s%s", sep, $1; sep = ", " }')"
+    if [ -n "$found" ]; then
+      say "Set Kennet up in your coding agents ($found)?"
+      printf "It adds the kennet skill, and Kennet's MCP server to each one's config. [y/N] "
+      answer=""
+      read -r answer < /dev/tty || true
+      case "$answer" in [yY]*) setup=1 ;; esac
+    fi
+  fi
+  if [ "$setup" = 1 ] && "$DIR/kennet" agents install; then
+    say "Ask your coding agent: log me into Kennet"
   else
     say "Next: run \`kennet login\`"
+    [ "$setup" = 1 ] || say "To set Kennet up in your coding agents: kennet agents install"
   fi
 }
 
