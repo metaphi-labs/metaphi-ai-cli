@@ -395,9 +395,12 @@ Each row is one harness (`claude`, `codex`, `hum`, `gemini`, `copilot`, `cursor`
 `codex mcp login kennet`, or where in the agent to do it); tell the user, since the browser page is theirs.
 `present`: a server named kennet was there already and is left as it is. `skipped`: `mcp_detail` says why.
 `skill_state` `kept`: a skill file there that kennet did not write; `--force` replaces it, only if the user says
-so. `--harness <name>` (repeatable) picks harnesses; `--project` writes this repository's files instead, to
-commit. `no_agent_found`: none is on this machine; name one with `--harness`. `kennet agents remove` takes away
-what install added, and only that. A tool call that says the server needs a sign-in: the same `sign_in`.
+so. `next_step` is the first `sign_in` that is a command. `--harness <name>` (repeatable) picks harnesses;
+`--project` writes the root of this repository's files instead, to commit (`not_a_repository` outside one).
+`no_agent_found`: none is on this machine; name one with `--harness`. `nothing_installed` (exit 1): no harness got
+either piece; each row beside the error says why. `kennet agents remove` takes away what install added, and only
+that. A tool call that says the server needs a sign-in: the same `sign_in`. Run `kennet agents install` when the
+user asks for it, never on your own: it changes their agents' configuration.
 
 The loop: write a Harbor bundle, check it (`run_task_ci_checks`), run models on it (`run_harbor_tasks`), read
 the rollouts (`harbor_runs`, `harbor_run_report`, `harbor_rollouts`), fix, repeat. Long calls return a task:

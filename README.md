@@ -12,7 +12,9 @@ macOS and Linux, x86_64 and arm64, no root; it needs `ssh-keygen` (OpenSSH), whi
 latest release's `checksums.txt` is signed by Metaphi AI's release key, that the binary matches it and that it
 starts, then puts it in `~/.local/share/kennet/versions/<version>/` with `~/.local/bin/kennet` (or
 `$KENNET_INSTALL_DIR/kennet`) a symlink to it. It says the line to add if that directory is not on your `PATH`, and
-sets Kennet up in each coding agent it finds (`kennet agents install`, below). Run it again to upgrade; a plain-file install from an
+at a terminal, asks before setting Kennet up in the coding agents it finds (`kennet agents install`, below; the
+answer defaults to no). It never touches an agent's configuration in CI or without a terminal to ask at, as in a
+container or a sandbox image; `KENNET_SETUP_AGENTS=1` answers yes ahead of time, `0` no. Run it again to upgrade; a plain-file install from an
 earlier version is moved to this layout. The binary then keeps itself current (below).
 
 ```sh
@@ -83,7 +85,7 @@ That puts two things in each harness it finds on the machine (by its command on 
 directory): the `kennet` skill, where that harness reads skills, and Kennet's MCP server
 (`https://kennet.metaphi.ai/mcp/`, for authoring tasks), the way that harness takes one. A person's own config goes
 through the harness's own `mcp add` where it has one that does not stop to sign in, else its config file; `--project` writes this repository's files instead, to commit
-for a team.
+for a team, at the root of the repository you are in (never your home directory).
 
 | Harness | Skill (you / `--project`) | MCP server (you / `--project`) | Sign in |
 | --- | --- | --- | --- |
@@ -93,15 +95,19 @@ for a team.
 | Gemini CLI | `~/.agents/skills` / `.agents/skills` | `gemini mcp add --scope user` / `.gemini/settings.json` | `/mcp auth kennet` |
 | GitHub Copilot CLI | `~/.agents/skills` / `.agents/skills` | `copilot mcp add` / `.mcp.json` | `/mcp auth kennet` |
 | Cursor | `~/.agents/skills` / `.agents/skills` | `~/.cursor/mcp.json` / `.cursor/mcp.json` | Cursor's MCP settings |
-| opencode | `~/.agents/skills` / `.agents/skills` | `~/.config/opencode/opencode.json` / `opencode.json` | `opencode mcp auth kennet` |
+| opencode | `~/.agents/skills` / `.agents/skills` | `$XDG_CONFIG_HOME/opencode/opencode.json[c]` (or `$OPENCODE_CONFIG`) / `opencode.json[c]` | `opencode mcp auth kennet` |
 
 A folder several harnesses read (`~/.agents/skills`, the [Agent Skills](https://agentskills.io) standard's, and
 `.mcp.json`) is written once. `--harness <name>` (repeatable: `claude`, `codex`, `hum`, `gemini`, `copilot`,
 `cursor`, `opencode`) picks harnesses instead of every one found. Running it again changes nothing. Nothing of
 anyone else's is replaced: a skill file kennet did not write stays (`--force` replaces it), and a server named
-`kennet` that kennet did not add stays as it is. `kennet agents remove` takes away exactly what install added;
-`kennet agents list` says, per harness, what is there. With `--json` each harness is a row: `skill_state`
-(`written`, `kept`), `mcp` (`added`, `installed`, `present`, `skipped` with `mcp_detail`) and `sign_in`.
+`kennet` that kennet did not add stays as it is, and a config file that does not parse (or would not, with the
+server added) is not written: the row says what to add to it by hand. `kennet agents remove` takes away exactly what
+install added: a folder or file another installed harness still reads stays until that one is removed too, and a
+file is deleted only when kennet made it. `kennet agents list` says, per harness, what is there. With `--json` each
+harness is a row: `skill_state` (`written`, `kept`), `mcp` (`added`, `installed`, `present`, `skipped` with
+`mcp_detail`) and `sign_in`; `next_step` is the first `sign_in` that is a command. When no harness got either
+piece, it fails (exit 1, `nothing_installed`) with the rows beside the error.
 
 Then ask the agent for what you want: "twin `trace.jsonl` before I send it to the vendor". The skill is a pointer:
 it tells the agent to run `kennet skill show`, which prints the guide for the version installed, so the guide never

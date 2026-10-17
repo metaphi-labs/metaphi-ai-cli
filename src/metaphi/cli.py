@@ -787,17 +787,19 @@ _SAID = {"added": "MCP server added", "installed": "MCP server already added by 
 
 def cmd_agents_install(a: argparse.Namespace) -> None:
     rows = agents.install(a.harness, a.project, a.force)
-    sign_in = [r["sign_in"] for r in rows if r.get("sign_in")]
     lines = []
     for r in rows:
         h = agents.BY_NAME[r["harness"]]
-        skill_said = (f"skill at {r['skill']}" if r["skill_state"] == "written"
-                      else f"skill: {r['skill']} is not kennet's; left as it is (--force replaces it)")
+        skill_said = {"written": f"skill at {r['skill']}",
+                      "kept": f"skill: {r['skill']} is not kennet's; left as it is (--force replaces it)"}.get(
+            r["skill_state"]) or f"skill skipped: {r.get('skill_detail')}"
         mcp_said = _SAID.get(r["mcp"]) or f"MCP server skipped: {r['mcp_detail']}"
         lines.append(f"{h.title}: {skill_said}; {mcp_said}" + (f"; sign in: {r['sign_in']}" if r.get("sign_in")
                                                               else ""))
-    _out(a, {"harnesses": rows, "next_step": sign_in[0] if len(sign_in) == 1 else None},
-         *lines, "Start a new session in each for the skill to load.")
+    # the first sign-in a command does; each row says its own
+    first = next((r["sign_in"] for r in rows if r.get("sign_in") and r["sign_in"] == agents.BY_NAME[
+        r["harness"]].sign_in), None)
+    _out(a, {"harnesses": rows, "next_step": first}, *lines, "Start a new session in each for the skill to load.")
 
 
 def cmd_agents_remove(a: argparse.Namespace) -> None:
@@ -809,8 +811,8 @@ def cmd_agents_remove(a: argparse.Namespace) -> None:
 def cmd_agents_list(a: argparse.Namespace) -> None:
     rows = agents.status(a.project)
     _out(a, {"harnesses": rows},
-         *(f"{r['harness']:<9} {'here' if r['present'] else '-':<5} skill {r['skill_state']:<8} mcp {r['mcp']}"
-           for r in rows))
+         *(f"{r['harness']:<9} {'here' if r['present'] else '-':<5}"
+           + (f" skill {r['skill_state']:<8} mcp {r['mcp']}" if "skill" in r else "") for r in rows))
 
 
 EXAMPLES = """\
