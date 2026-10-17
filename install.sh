@@ -118,10 +118,12 @@ main() {
       ;;
   esac
 
+  # the skill and Kennet's MCP server into each coding agent here (Claude Code, Codex, Hum and the rest: the binary
+  # knows where each reads them); it fails, and says nothing, when there is none
   say ""
-  if { command -v claude >/dev/null 2>&1 || [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" ]; } &&
-    "$DIR/kennet" skill install >/dev/null 2>&1; then
-    say "Ask Claude: log me into Kennet"
+  if agents="$("$DIR/kennet" agents install 2>/dev/null)"; then
+    say "$agents"
+    say "Ask your coding agent: log me into Kennet"
   else
     say "Next: run \`kennet login\`"
   fi

@@ -49,7 +49,7 @@ def _release(d: Path, key: Path, version: str, bad: bool = False) -> None:
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
     stub = d / "kennet"
-    stub.write_text(f'#!/bin/sh\ncase "$1" in skill|__prune) exit 0 ;; esac\necho "kennet {version}"\n')
+    stub.write_text(f'#!/bin/sh\ncase "$1" in __prune) exit 0 ;; agents) [ -d "$HOME/.claude" ] && echo "Claude Code: skill" && exit 0; exit 1 ;; esac\necho "kennet {version}"\n')
     stub.chmod(0o755)
     name = f"kennet_{version}_{_target()}.tar.gz"
     with tarfile.open(d / name, "w:gz") as t:
@@ -62,7 +62,7 @@ def _release(d: Path, key: Path, version: str, bad: bool = False) -> None:
 
 
 def _bare_path(tmp_path: Path) -> str:
-    """A PATH with only what install.sh calls: no `claude` on it, whatever this machine has."""
+    """A PATH with only what install.sh calls: no coding agent's command on it, whatever this machine has."""
     d = tmp_path / "tools"
     d.mkdir(exist_ok=True)
     for tool in TOOLS:
@@ -114,7 +114,7 @@ def test_running_it_again_upgrades_and_leaves_the_old_version_for_whoever_runs_i
     assert _run(tmp_path / "bin" / "kennet") == "kennet 0.1.17\n"
     assert (versions / "0.1.16" / "kennet").read_bytes() == old   # a process running 0.1.16 keeps its file
     assert "not on your PATH" not in got.stdout
-    assert got.stdout.splitlines()[-1] == "Ask Claude: log me into Kennet"
+    assert got.stdout.splitlines()[-2:] == ["Claude Code: skill", "Ask your coding agent: log me into Kennet"]
 
 
 def test_a_plain_file_install_is_migrated_to_the_symlink(tmp_path, key):

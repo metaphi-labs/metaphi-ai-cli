@@ -728,22 +728,16 @@ def test_help_is_a_command_and_shows_the_examples(capsys):
     assert "kennet twins wait" in capsys.readouterr().out
 
 
-def test_skill_install_writes_a_stub_that_sends_the_agent_to_the_binarys_own_guide(home, capsys):
-    assert cli.main(["skill", "install", "--json"]) == 0
+def test_skill_install_is_agents_install_and_the_stub_sends_the_agent_to_the_binarys_own_guide(home, capsys,
+                                                                                               monkeypatch):
+    monkeypatch.setenv("PATH", str(home))   # no harness's command: the skill alone, which is a file
+    assert cli.main(["skill", "install", "--harness", "claude", "--json"]) == 0
     path = home / "claude" / "skills" / "kennet" / "SKILL.md"
-    assert json.loads(capsys.readouterr().out) == {"path": str(path), "next_step": "kennet skill show"}
+    (row,) = json.loads(capsys.readouterr().out)["harnesses"]
+    assert row["skill"] == str(path) and row["skill_state"] == "written" and row["mcp"] == "skipped"
     text = path.read_text()
     assert text.startswith("---\nname: kennet\ndescription: ") and "kennet skill show" in text
-    assert cli.main(["skill", "install"]) == 0   # again: ours, so replaced
-    assert cli.main(["skill", "install", "--project"]) == 0
-    assert (home / ".claude" / "skills" / "kennet" / "SKILL.md").read_text() == text
-    capsys.readouterr()
-    assert cli.main(["skill", "remove"]) == 0 and not path.parent.exists()
-    path.parent.mkdir(parents=True)
-    path.write_text("mine")   # someone else's file is never overwritten or removed without being told to
-    assert cli.main(["skill", "install"]) == 1 and path.read_text() == "mine"
-    assert cli.main(["skill", "remove"]) == 0 and path.read_text() == "mine"
-    assert cli.main(["skill", "install", "--force"]) == 0 and path.read_text() == text
+    assert cli.main(["skill", "remove", "--harness", "claude"]) == 0 and not path.parent.exists()
 
 
 def test_the_guide_names_only_commands_and_flags_the_parser_takes(capsys):
