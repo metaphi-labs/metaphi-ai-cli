@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import getpass
 import json
 import math
@@ -191,7 +192,7 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     key = env or cfg.get("api_key")
     if not cfg.get("token") and not key:
         raise accounts.need("not signed in; run `kennet login`", "not_signed_in", "kennet login")
-    orgs, credit = [], {}
+    orgs, credit, left = [], {}, {}
     with ThreadPoolExecutor(max_workers=2) as pool:   # the keys are asked of the twin service meanwhile
         asked = (pool.submit(_key_status, key, "METAPHI_API_KEY" if env else "saved"),
                  pool.submit(_key_status, cfg.get("test_api_key"), "saved"))
@@ -199,6 +200,9 @@ def cmd_whoami(a: argparse.Namespace) -> None:
             orgs = accounts.orgs()   # a sign-in that has ended is refused here
             with contextlib.suppress(config.Error):   # a member who is not shown the balance
                 credit = {o["id"]: o for o in accounts.org_credits()}
+            for o in orgs:
+                with contextlib.suppress(config.Error):   # an accounts that does not say it yet
+                    left[o["id"]] = accounts.available(o["id"])
         (live, refused), (test, _) = asked[0].result(), asked[1].result()
     gone = refused is not None and refused.code in ("invalid_api_key", "missing_api_key")
     invitations = _invitations(cfg, orgs) if cfg.get("token") else []
@@ -217,6 +221,8 @@ def cmd_whoami(a: argparse.Namespace) -> None:
            "org": cfg.get("org") if cfg.get("token") else None,
            "organizations": [{"id": o["id"], "role": o.get("role"), "grants": o.get("grants") or [],
                               **({"admission": o["admission"]} if o.get("admission") else {}),
+                              **({k: left[o["id"]].get(k) for k in ("available_usd", "bound", "resets")}
+                                 if o["id"] in left else {}),
                               **({"credits_usd": credit[o["id"]]["credits_usd"],
                                   "can_buy": bool(credit[o["id"]].get("can_buy"))} if o["id"] in credit else {})}
                              for o in orgs],
@@ -228,8 +234,11 @@ def cmd_whoami(a: argparse.Namespace) -> None:
         waits = o.get("admission") == "pending"
         lines.append(f"org:    {o['id']} ({o['role']}) "
                      + ("waits for Metaphi AI to approve it" if waits else
-                        f"holds {', '.join(o['grants']) or 'nothing yet'}")
-                     + (f"; ${o['credits_usd']:,.2f} prepaid credit" if "credits_usd" in o else ""))
+                        f"holds {', '.join(o['grants']) or 'nothing yet'}"))
+        if "bound" in o:
+            lines.append(f"you:    {_left(o)}")
+        if "credits_usd" in o:
+            lines.append(f"balance: {_money(o['credits_usd'])}")
     lines += [f"invite: {_invitation_line(i)}" for i in invitations]
     said = {"ok": "works"}
     lines.append(f"key:    {live['hint']} ({live['source']}): {said.get(live['status'], live['status'])}" if live else
@@ -246,6 +255,17 @@ def cmd_whoami(a: argparse.Namespace) -> None:
     error = refused or no_key(cfg, fresh=invitation)
     error.context = {**error.context, **got}
     raise error
+
+
+def _left(o: dict) -> str:
+    """What the person may spend now in the organization, and what bounds it, as whoami says it to every role."""
+    if o["available_usd"] is None:
+        return "no limit"
+    if o["bound"] == "balance":
+        return f"{_money(o['available_usd'])} left (org balance)"
+    day = datetime.date.fromisoformat(o["resets"])
+    whose = "your" if o["bound"] == "limit" else "org"
+    return f"{_money(o['available_usd'])} left ({whose} monthly limit, resets {day:%b} {day.day})"
 
 
 def _seconds(said: str) -> float:
@@ -468,7 +488,7 @@ def _credit_url(e: errors.MetaphiError) -> str:
 
 def _buy(o: dict, usd: float, open_browser: bool = True) -> None:
     got = accounts.buy(o["id"], usd, open_browser=open_browser)
-    print(f"Paid. {o['id']}: ${got['credits_usd']:,.2f} prepaid credit")
+    print(f"Paid. {o['id']}: balance {_money(got['credits_usd'])}")
 
 
 def _top_up(o: dict) -> bool:
@@ -501,7 +521,7 @@ def _refill(e: errors.MetaphiError) -> bool:
     if not o.get("can_buy"):
         e.advice = f"An owner or billing member of {o['id']} has to add credit: {_credit_url(e)}"
         return False
-    print(f"{o['id']} is out of prepaid credit.")
+    print(f"{o['id']} is out of credit.")
     return _top_up(o)
 
 
@@ -764,7 +784,7 @@ def cmd_credits(a: argparse.Namespace) -> None:
     out = o["credits_usd"] <= 0
     _out(a, {"org": o["id"], "credits_usd": o["credits_usd"], "can_buy": bool(o.get("can_buy")),
              **({"next_step": "kennet credits buy"} if out and o.get("can_buy") else {})},
-         f"{o['id']}: ${o['credits_usd']:,.2f} prepaid credit",
+         f"{o['id']}: balance {_money(o['credits_usd'])}",
          *(["Runs are refused until credit is added" + (": `kennet credits buy`." if o.get("can_buy") else
                                                        "; ask an owner or billing member to add it.")] if out else []))
 
@@ -1130,7 +1150,7 @@ def parser() -> argparse.ArgumentParser:
         verb.add_argument("--org", help="the organization, when you manage several")
         _json_flag(verb)
 
-    s = sub.add_parser("credits", help="your organization's prepaid balance")
+    s = sub.add_parser("credits", help="your organization's balance")
     s.add_argument("--org")
     _json_flag(s)
     s.set_defaults(fn=cmd_credits)
