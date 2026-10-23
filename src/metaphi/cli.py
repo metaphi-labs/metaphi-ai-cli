@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import getpass
 import json
+import math
 import os
 import re
 import shlex
@@ -35,7 +36,7 @@ from pathlib import Path
 
 import httpx
 
-from metaphi import __version__, accounts, agents, config, errors, skill, update
+from metaphi import __version__, accounts, admin, agents, config, errors, skill, update
 
 FAILED, USAGE, AUTH, LATER, UPGRADE = 1, 2, 3, 4, 5
 
@@ -619,14 +620,19 @@ def _key(k: dict) -> dict:
                                   "last_used", "revoked", "revoked_by")}
 
 
+def _rows(rows: list[tuple]) -> list[str]:
+    """A table: each column as wide as its widest cell, the last one as it is."""
+    width = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
+    return ["  ".join(c.ljust(w) for c, w in zip(r, width)) + "  " + r[-1] for r in rows]
+
+
 def _key_lines(held: list[dict]) -> list[str]:
     rows = [("NAME", "ID", "KEY", "MODE", "SCOPES", "CREATED", "LAST USED", "BY")] + [
         (k["name"], k["id"], k["hint"], "live" if k["livemode"] else "test", ",".join(k["scopes"] or []) or "-",
          _when(k["created"]), _when(k["last_used"]) if k["last_used"] else "never",
          ("terminal " if k["owner"] == "cli" else "") + str(k["created_by"] or "-")
          + (f"  revoked {_when(k['revoked'])}" if k["revoked"] else "")) for k in held]
-    width = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
-    return ["  ".join(c.ljust(w) for c, w in zip(r, width)) + "  " + r[-1] for r in rows]
+    return _rows(rows)
 
 
 def _org_keys(a: argparse.Namespace) -> tuple[dict, list[dict]]:
@@ -770,6 +776,169 @@ def cmd_credits_buy(a: argparse.Namespace) -> None:
     _buy(o, a.amount, open_browser=not a.no_browser)
 
 
+def _money(usd: object) -> str:
+    if not isinstance(usd, (int, float)):
+        return "-"
+    return f"{'-' if usd < 0 else ''}${abs(usd):,.2f}"
+
+
+def _subject(said: str) -> str:
+    """A subject as accounts names it: `org:<id>`, or a person's address in lower case."""
+    said = said.strip()
+    if said.startswith(admin.ORG) and len(said) > len(admin.ORG):
+        return said
+    if "@" not in said or " " in said:
+        raise argparse.ArgumentTypeError(f"{said!r} is neither an address nor org:<id>")
+    return said.lower()
+
+
+def _email(said: str) -> str:
+    said = said.strip().lower()
+    if "@" not in said or " " in said:
+        raise argparse.ArgumentTypeError(f"{said!r} is not an address")
+    return said
+
+
+def _amount(said: str) -> float:
+    try:
+        usd = round(float(said.lstrip("$")), 2)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an amount: {said!r}") from None
+    if not math.isfinite(usd):
+        raise argparse.ArgumentTypeError(f"not an amount: {said!r}")
+    return usd
+
+
+def _days(said: str) -> float:
+    try:
+        got = float(said)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{said!r} is not a number of days") from None
+    if not 0 < got < math.inf:
+        raise argparse.ArgumentTypeError("a number of days above zero")
+    return got
+
+
+def cmd_admin_orgs(a: argparse.Namespace) -> None:
+    got = admin.orgs()
+    rows = [("ID", "NAME", "ADMISSION", "MEMBERS", "KEYS", "CREDIT", "GRANTS")] + [
+        (o["id"], str(o.get("name") or "-"), str(o.get("admission") or "-"), str(len(o.get("roles") or {})),
+         str(o.get("live_keys", 0)), _money(o.get("credits_usd")), ",".join(o.get("grants") or []) or "-")
+        for o in got]
+    _out(a, {"data": got}, *(_rows(rows) if got else ["no organizations"]))
+
+
+def cmd_admin_admissions(a: argparse.Namespace) -> None:
+    got = admin.admissions()
+    rows = [("ORG", "NAME", "ASKED BY", "ASKED")] + [
+        (o["org"], str(o.get("name") or "-"), str(o.get("asked_by") or "-"), _when(o.get("asked"))) for o in got]
+    _out(a, {"data": got}, *(_rows(rows) if got else ["no organization waits for approval"]),
+         f"Next: kennet admin org {got[0]['org']} admit" if got else "")
+
+
+def _access_lines(got: dict) -> list[str]:
+    members, _ = _members({"members": got.get("roles") or {}})
+    live = [k for k in got.get("keys") or [] if not k.get("revoked")]
+    return [(f"{got['org']}: {got.get('admission') or 'not asked for Kennet'}; "
+             f"holds {', '.join(got.get('grants') or []) or 'nothing'}; keys: {len(live)} live"),
+            *_member_lines(members, [])]
+
+
+def cmd_admin_org(a: argparse.Namespace) -> None:
+    got = admin.access(a.org)
+    _out(a, got, *_access_lines(got))
+
+
+def cmd_admin_org_add(a: argparse.Namespace) -> None:
+    got = admin.set_role(a.org, a.email, a.role)
+    _out(a, got, f"{a.email} is {a.role} of {a.org}")
+
+
+def cmd_admin_org_grant(a: argparse.Namespace) -> None:
+    got = admin.grant_org(a.org, a.scope) if a.org_verb == "grant" else admin.ungrant_org(a.org, a.scope)
+    _out(a, got, *_access_lines(got))
+
+
+def cmd_admin_org_admit(a: argparse.Namespace) -> None:
+    got = admin.admit(a.org) if a.org_verb == "admit" else admin.unadmit(a.org)
+    _out(a, got, *_access_lines(got))
+
+
+def cmd_admin_org_billing(a: argparse.Namespace) -> None:
+    got = admin.billing(a.org, a.mode, a.credit_limit)
+    _out(a, got, f"{a.org} is {got.get('mode', a.mode)}"
+         + (f", up to {_money(got['credit_limit_usd'])} below zero" if got.get("credit_limit_usd") is not None else "")
+         + (f"; headroom {_money(got['headroom_usd'])}" if isinstance(got.get("headroom_usd"), (int, float)) else ""))
+
+
+def cmd_admin_org_funds(a: argparse.Namespace) -> None:
+    got = admin.funds_members(a.org, a.state == "on")
+    _out(a, got, f"{a.org} {'pays' if got.get('funds_members') else 'does not pay'} for its members' spend")
+
+
+def cmd_admin_org_transactions(a: argparse.Namespace) -> None:
+    got = admin.transactions(a.org, a.limit, a.type)
+    held = got.get("data") or []
+    rows = [("ID", "TYPE", "AMOUNT", "WHEN", "FOR")] + [
+        (t["id"], t["type"], _money(t.get("amount_usd")), _when(t.get("created")),
+         " ".join(str(t[k]) for k in ("product", "route", "ref") if t.get(k)) or "-") for t in held]
+    _out(a, got, *(_rows(rows) if held else [f"{a.org} has no transactions"]),
+         f"balance {_money(got.get('credits_usd'))}" + ("; more with --limit" if got.get("has_more") else ""))
+
+
+def cmd_admin_grants(a: argparse.Namespace) -> None:
+    if a.verb == "grants":
+        got = admin.grants(a.email)
+    else:
+        got = admin.grant(a.email, a.scope) if a.verb == "grant" else admin.revoke(a.email, a.scope)
+    held = got.get("held") or {}
+    _out(a, got, f"{got.get('email', a.email)}" + (f" (admin: {got['admin']})" if got.get("admin") else ""),
+         *(f"  {r}: {' '.join(s) or '-'}" for r, s in held.items()))
+
+
+def cmd_admin_credit(a: argparse.Namespace) -> None:
+    if a.usd == 0:
+        raise accounts.Error("an amount other than zero")
+    got = admin.credit(a.subject, a.usd, a.days, a.note)
+    said = (f"{_money(a.usd)} to {a.subject}" + (f" for {a.days:g} days" if a.days else "")
+            if got.get("granted", True) else f"that grant to {a.subject} was made already")
+    _out(a, got, f"{said}; balance {_money(got.get('credits_usd'))}")
+
+
+def cmd_admin_end(a: argparse.Namespace) -> None:
+    got = admin.end(a.subject, a.grant)
+    _out(a, got, (f"grant {a.grant} ended; {_money(got.get('lost_usd'))} left on it is gone" if got.get("ended")
+                  else f"grant {a.grant} had ended already") + f"; balance {_money(got.get('credits_usd'))}")
+
+
+def cmd_admin_limits(a: argparse.Namespace) -> None:
+    if a.usd is not None or a.clear:
+        got = admin.set_limit(a.subject, a.product, None if a.clear else a.usd)
+    else:
+        got = admin.limits(a.subject)
+    held = got.get("limits") or []
+    _out(a, got, *([f"{got.get('subject', a.subject)} {c['product']}: {_money(c['usd'])} a month" for c in held]
+                   or [f"{got.get('subject', a.subject)}: no limit"]))
+
+
+def cmd_admin_models(a: argparse.Namespace) -> None:
+    if a.patterns or a.clear or a.none:
+        got = admin.set_models(a.subject, a.product, None if a.clear else [] if a.none else a.patterns)
+    else:
+        got = admin.models(a.subject)
+    held = got.get("models") or []
+    _out(a, got, *([f"{got.get('subject', a.subject)} {m['product']}: {', '.join(m['models']) or 'no model'}"
+                    for m in held] or [f"{got.get('subject', a.subject)}: any model its products offer"]))
+
+
+def cmd_admin_audit(a: argparse.Namespace) -> None:
+    got = admin.audit(a.actor, a.days, a.limit)
+    rows = [("WHEN", "WHO", "STATUS", "CHANGE")] + [
+        (_when(r.get("at")), str(r.get("actor") or "-"), str(r.get("status") or "-"),
+         f"{r.get('method')} {r.get('path')}" + (f"?{r['query']}" if r.get("query") else "")) for r in got]
+    _out(a, {"data": got}, *(_rows(rows) if got else ["no changes in that window"]))
+
+
 def cmd_update(a: argparse.Namespace) -> None:
     got = update.now()
     if got["updated"]:
@@ -835,6 +1004,7 @@ examples:
   kennet pull eswe-mini@0.1.0       fetch one into ./eswe-mini-0.1.0; again, only what differs
   kennet verify ./eswe-mini-0.1.0   check it against its lock, offline
   kennet registry login             sign docker in to pull its images, for an hour
+  kennet admin org acme             Metaphi AI's admins: what an organization holds; `kennet admin -h` for the rest
 
 from an agent or a script (no terminal): add --json; stdout is then the result or the error object alone.
   kennet agents install             teach every coding agent here this CLI, and connect Kennet's MCP server
@@ -971,7 +1141,98 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--no-browser", action="store_true", help="print the link instead of opening it")
     b.set_defaults(fn=cmd_credits_buy)
 
-    s = sub.add_parser("twin", help="twin a trace (JSON, JSON Lines or text)")
+    s = sub.add_parser("admin", help="Metaphi AI's admins: organizations, people's grants, credit, limits and models "
+                       "(an account holding metaphi:admin)")
+    s.set_defaults(fn=lambda a, s=s: s.print_help())
+    verbs = s.add_subparsers(dest="verb", metavar="<verb>")
+    v = verbs.add_parser("orgs", help="every organization: admission, members, keys, credit, grants")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_admin_orgs)
+    v = verbs.add_parser("admissions", help="the organizations waiting to be approved, the longest wait first")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_admin_admissions)
+
+    o = verbs.add_parser("org", help="one organization: what it holds and who manages it; add a person, grant, "
+                         "admit, set its billing")
+    o.add_argument("org", metavar="<org>", help="the organization's id")
+    _json_flag(o)
+    o.set_defaults(fn=cmd_admin_org)
+    org = o.add_subparsers(dest="org_verb", metavar="<verb>")
+    d = org.add_parser("add", help="put a person in it in a role, moving them from another organization")
+    d.add_argument("email", type=_email)
+    d.add_argument("--role", choices=accounts.ROLES, default="member", help="default member")
+    d.set_defaults(fn=cmd_admin_org_add)
+    g = org.add_parser("grant", help="grant it a scope its keys may then hold")
+    u = org.add_parser("ungrant", help="take a scope back, from every key of it too")
+    for verb in (g, u):
+        verb.add_argument("scope", help="e.g. kennet:twin")
+        verb.set_defaults(fn=cmd_admin_org_grant)
+    m = org.add_parser("admit", help="approve it for Kennet; its owners are mailed")
+    n = org.add_parser("unadmit", help="take it out of Kennet, and what admission gave it from every key")
+    for verb in (m, n):
+        verb.set_defaults(fn=cmd_admin_org_admit)
+    b = org.add_parser("billing", help="how its spend is bounded: prepaid (its balance), invoiced (a credit limit "
+                       "below zero), internal (ours; each member's limit bounds them)")
+    b.add_argument("mode", choices=admin.BILLING)
+    b.add_argument("--credit-limit", type=_amount, metavar="USD", help="invoiced: how far below zero it may go")
+    b.set_defaults(fn=cmd_admin_org_billing)
+    f = org.add_parser("funds-members", help="whether it pays for its members' spend from its balance")
+    f.add_argument("state", choices=("on", "off"))
+    f.set_defaults(fn=cmd_admin_org_funds)
+    t = org.add_parser("transactions", help="its ledger entries, newest first, and its balance")
+    t.add_argument("--limit", type=int, default=20, help="how many (default 20, at most 100)")
+    t.add_argument("--type", choices=admin.TRANSACTION_TYPES)
+    t.set_defaults(fn=cmd_admin_org_transactions)
+    for verb in (d, g, u, m, n, b, f, t):
+        _json_flag(verb)
+
+    v = verbs.add_parser("grants", help="what a person holds on every resource, and their admin role")
+    v.add_argument("email", type=_email)
+    v.set_defaults(fn=cmd_admin_grants)
+    g = verbs.add_parser("grant", help="give a person a scope (a resource's, or metaphi:admin[:read])")
+    r = verbs.add_parser("revoke", help="take a scope back from a person")
+    for verb in (g, r):
+        verb.add_argument("email", type=_email)
+        verb.add_argument("scope")
+        verb.set_defaults(fn=cmd_admin_grants)
+    for verb in (v, g, r):
+        _json_flag(verb)
+
+    c = verbs.add_parser("credit", help="credit a person or an organization from our side, for any spend")
+    c.add_argument("subject", type=_subject, metavar="<email|org:id>")
+    c.add_argument("usd", type=_amount, metavar="<usd>", help="dollars; below zero takes credit back")
+    c.add_argument("--days", type=_days, metavar="N", help="how long it lasts (default: it never ends)")
+    c.add_argument("--note", help="why, kept on the grant")
+    c.set_defaults(fn=cmd_admin_credit)
+    e = verbs.add_parser("end", help="end a grant we gave, now: what it has left is gone")
+    e.add_argument("subject", type=_subject, metavar="<email|org:id>")
+    e.add_argument("grant", type=int, metavar="<grant id>", help="as `kennet admin credit --json` lists it")
+    e.set_defaults(fn=cmd_admin_end)
+    li = verbs.add_parser("limits", help="a person's or an organization's monthly caps; set one, or take it away")
+    li.add_argument("subject", type=_subject, metavar="<email|org:id>")
+    set_ = li.add_mutually_exclusive_group()
+    set_.add_argument("--usd", type=_amount, metavar="N", help="the month's cap in dollars (UTC month)")
+    set_.add_argument("--clear", action="store_true", help="take the cap away")
+    li.add_argument("--product", default="*", help="hum, kennet, route:<route>, or * for every product (default *)")
+    li.set_defaults(fn=cmd_admin_limits)
+    mo = verbs.add_parser("models", help="the models a person or an organization may call; set the list, or take "
+                          "it away")
+    mo.add_argument("subject", type=_subject, metavar="<email|org:id>")
+    mo.add_argument("patterns", nargs="*", metavar="<pattern>", help="a catalog id, or one with * (openai/*)")
+    set_ = mo.add_mutually_exclusive_group()
+    set_.add_argument("--clear", action="store_true", help="take the list away: any model the product offers")
+    set_.add_argument("--none", action="store_true", help="no model at all")
+    mo.add_argument("--product", default="hum", help="the product that holds calls to the list (default hum)")
+    mo.set_defaults(fn=cmd_admin_models)
+    au = verbs.add_parser("audit", help="the changes admins made, newest first")
+    au.add_argument("--actor", type=_email, metavar="EMAIL", help="only this person's")
+    au.add_argument("--days", type=int, default=30, help="how far back (default 30)")
+    au.add_argument("--limit", type=int, default=200, help="how many (default 200)")
+    au.set_defaults(fn=cmd_admin_audit)
+    for verb in (c, e, li, mo, au):
+        _json_flag(verb)
+
+    s = sub.add_parser("twin",help="twin a trace (JSON, JSON Lines or text)")
     s.add_argument("file")
     where = s.add_mutually_exclusive_group()
     where.add_argument("-o", "--output", help="where the twinned trace goes (default <name>.twin<ext> beside the file)")

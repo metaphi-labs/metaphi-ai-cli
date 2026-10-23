@@ -388,6 +388,26 @@ With `--json` the error object carries the same two things: `action_url`, the pa
 The library never prompts: `twin()` raises `BillingError`, whose `action_url` is the add-credit page when the service
 sent one.
 
+## Metaphi AI's admins
+
+An account holding `metaphi:admin` runs accounts' admin from here, on its own `kennet login`: `metaphi:admin:read`
+reads, `metaphi:admin` also changes, and accounts writes every change to its audit under your name.
+
+```sh
+kennet admin orgs                                  # every organization: admission, members, keys, credit, grants
+kennet admin admissions                            # the ones waiting for approval
+kennet admin org acme                              # what it holds, who is in it; then a verb:
+kennet admin org acme add bob@acme.com --role owner    # in, or moved from another organization
+kennet admin org acme grant kennet:twin            # ungrant takes it back, from its keys too; admit, unadmit
+kennet admin org acme billing invoiced --credit-limit 500   # prepaid | invoiced | internal; funds-members on|off
+kennet admin org acme transactions                 # its ledger, newest first, and its balance
+kennet admin grants sme@gmail.com                  # a person's scopes; grant and revoke <email> <scope>
+kennet admin credit org:acme 500 --days 90         # or a person's address; --note; end <subject> <grant id>
+kennet admin limits bob@acme.com --usd 200         # a monthly cap; --product, --clear
+kennet admin models org:acme 'anthropic/*'         # the models it may call; --none, --clear
+kennet admin audit --actor ac@metaphi.ai           # the changes admins made
+```
+
 ## Configuration
 
 | Variable | Default |
