@@ -1576,3 +1576,162 @@ def test_a_word_that_is_one_keys_id_and_anothers_name_is_ambiguous(capsys):
     got = json.loads(capsys.readouterr().out)["error"]
     assert (got["code"], got["next_step"]) == ("ambiguous_key", "kennet keys list") and "key_7" in got["message"]
     assert cli.main(["keys", "revoke", "key_7", "--yes", "--json"]) == 0 and gone.call_count == 1
+
+
+ACCESS = {"org": "acme", "admission": "admitted", "grants": ["kennet:twin"],
+          "roles": {"bob@acme.test": "member", "alice@acme.test": "owner"}, "keys": [KEY, {**KEY, "revoked": 1}]}
+
+
+@respx.mock
+def test_admin_org_reads_and_changes_an_organization_on_the_sign_ins_bearer(capsys):
+    config.save({"token": "tok"})
+    got = respx.get(f"{A}/admin/orgs/acme/access").respond(json=ACCESS)
+    assert cli.main(["admin", "org", "acme"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "acme: admitted; holds kennet:twin; keys: 1 live"
+    assert out[1].split() == ["alice@acme.test", "owner"] and out[2].split() == ["bob@acme.test", "member"]
+    assert got.calls[0].request.headers["authorization"] == "Bearer tok"
+    role = respx.put(f"{A}/admin/orgs/acme/roles/dan@acme.test").respond(json=ACCESS)
+    assert cli.main(["admin", "org", "acme", "add", "Dan@Acme.test", "--role", "admin"]) == 0
+    assert capsys.readouterr().out == "dan@acme.test is admin of acme\n"
+    assert json.loads(role.calls[0].request.content) == {"role": "admin"}
+    grant = respx.put(f"{A}/admin/orgs/acme/grants/kennet:delivery").respond(json=ACCESS)
+    ungrant = respx.delete(f"{A}/admin/orgs/acme/grants/kennet:twin").respond(json={**ACCESS, "grants": []})
+    admit = respx.put(f"{A}/admin/orgs/acme/admission").respond(json=ACCESS)
+    unadmit = respx.delete(f"{A}/admin/orgs/acme/admission").respond(json={**ACCESS, "admission": None})
+    assert cli.main(["admin", "org", "acme", "grant", "kennet:delivery", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == ACCESS
+    assert cli.main(["admin", "org", "acme", "ungrant", "kennet:twin"]) == 0
+    assert "holds nothing" in capsys.readouterr().out
+    assert cli.main(["admin", "org", "acme", "admit"]) == 0
+    assert cli.main(["admin", "org", "acme", "unadmit"]) == 0
+    assert "not asked for Kennet" in capsys.readouterr().out
+    assert [r.call_count for r in (grant, ungrant, admit, unadmit)] == [1, 1, 1, 1]
+    billing = respx.put(f"{A}/admin/orgs/acme/billing").respond(
+        json={"org": "acme", "mode": "invoiced", "credit_limit_usd": 500.0, "headroom_usd": 512.5, "authorizations": []})
+    assert cli.main(["admin", "org", "acme", "billing", "invoiced", "--credit-limit", "500"]) == 0
+    assert capsys.readouterr().out == "acme is invoiced, up to $500.00 below zero; headroom $512.50\n"
+    assert json.loads(billing.calls[0].request.content) == {"mode": "invoiced", "credit_limit_usd": 500.0}
+    funds = respx.put(f"{A}/admin/orgs/acme/funds-members").respond(json={"org": "acme", "funds_members": False})
+    assert cli.main(["admin", "org", "acme", "funds-members", "off"]) == 0
+    assert json.loads(funds.calls[0].request.content) == {"funds_members": False}
+    assert capsys.readouterr().out == "acme does not pay for its members' spend\n"
+    with pytest.raises(SystemExit):   # the three modes accounts takes
+        cli.main(["admin", "org", "acme", "billing", "postpaid"])
+
+
+@respx.mock
+def test_admin_lists_organizations_admissions_and_transactions(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/admin/accounts/orgs").respond(json=[{"id": "acme", "name": "Acme", "admission": "admitted",
+                                                         "roles": ACCESS["roles"], "live_keys": 1, "credits_usd": -2.5,
+                                                         "grants": ["kennet:twin", "kennet:delivery"]}])
+    assert cli.main(["admin", "orgs"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].split() == ["ID", "NAME", "ADMISSION", "MEMBERS", "KEYS", "CREDIT", "GRANTS"]
+    assert out[1].split() == ["acme", "Acme", "admitted", "2", "1", "-$2.50", "kennet:twin,kennet:delivery"]
+    respx.get(f"{A}/admin/admissions").respond(json=[{"org": "beta", "name": "Beta", "resource": "r",
+                                                      "asked_by": "eve@beta.test", "asked": 1_900_000_000}])
+    assert cli.main(["admin", "admissions"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "Next: kennet admin org beta admit"
+    tx = respx.get(f"{A}/admin/orgs/acme/transactions").respond(json={
+        "org": "acme", "has_more": True, "credits_usd": 7.5,
+        "data": [{"id": "u3", "type": "usage", "amount_usd": -20.0, "created": 1_900_000_000, "product": "kennet",
+                  "route": "kennet.twin", "ref": "up_1:run_1"},
+                 {"id": "c1", "type": "grant", "amount_usd": 27.5, "created": 1_899_000_000}]})
+    assert cli.main(["admin", "org", "acme", "transactions", "--limit", "2", "--type", "usage"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[1].split()[:3] == ["u3", "usage", "-$20.00"] and out[1].endswith("kennet kennet.twin up_1:run_1")
+    assert out[-1] == "balance $7.50; more with --limit"
+    assert dict(tx.calls[0].request.url.params) == {"limit": "2", "type": "usage"}
+
+
+@respx.mock
+def test_admin_grants_grant_and_revoke_a_persons_scope(capsys):
+    config.save({"token": "tok"})
+    held = {"email": "sme@gmail.test", "held": {"https://harwell.metaphi.ai/mcp/": ["harwell:grade"]},
+            "admin": None, "grants": ["harwell:grade"], "through_orgs": {}}
+    respx.get(f"{A}/admin/users/sme@gmail.test/grants").respond(json=held)
+    put = respx.put(f"{A}/admin/users/sme@gmail.test/grants/harwell:grade").respond(json=held)
+    gone = respx.delete(f"{A}/admin/users/sme@gmail.test/grants/harwell:grade").respond(
+        json={**held, "held": {"https://harwell.metaphi.ai/mcp/": []}, "grants": []})
+    assert cli.main(["admin", "grants", "SME@gmail.test"]) == 0
+    assert capsys.readouterr().out == "sme@gmail.test\n  https://harwell.metaphi.ai/mcp/: harwell:grade\n"
+    assert cli.main(["admin", "grant", "sme@gmail.test", "harwell:grade", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == held and put.call_count == 1
+    assert cli.main(["admin", "revoke", "sme@gmail.test", "harwell:grade"]) == 0
+    assert capsys.readouterr().out.endswith("mcp/: -\n") and gone.call_count == 1
+
+
+@respx.mock
+def test_admin_credit_and_end_go_to_the_person_or_the_organization_and_name_no_models(capsys):
+    config.save({"token": "tok"})
+    person = respx.post(f"{A}/admin/users/sme@gmail.test/credits").respond(
+        json={"email": "sme@gmail.test", "credits_usd": 50.0, "credits": [{"id": 9, "usd": 50.0}]})
+    assert cli.main(["admin", "credit", "SME@gmail.test", "$50", "--days", "30", "--note", "pilot"]) == 0
+    assert capsys.readouterr().out == "$50.00 to sme@gmail.test for 30 days; balance $50.00\n"
+    assert json.loads(person.calls[0].request.content) == {"usd": 50.0, "days": 30.0, "note": "pilot"}
+    org = respx.post(f"{A}/admin/orgs/acme/credits").respond(json={"org": "acme", "granted": True, "credits_usd": 75.0})
+    assert cli.main(["admin", "credit", "org:acme", "-25"]) == 0
+    assert json.loads(org.calls[0].request.content) == {"usd": -25.0, "days": None, "note": None}
+    assert capsys.readouterr().out == "-$25.00 to org:acme; balance $75.00\n"
+    assert cli.main(["admin", "credit", "org:acme", "0"]) == cli.FAILED and org.call_count == 1
+    capsys.readouterr()
+    end = respx.post(f"{A}/admin/orgs/acme/credits/9/end").respond(
+        json={"org": "acme", "id": 9, "ended": True, "lost_usd": 12.0, "credits_usd": 63.0})
+    assert cli.main(["admin", "end", "org:acme", "9"]) == 0 and end.call_count == 1
+    assert capsys.readouterr().out == "grant 9 ended; $12.00 left on it is gone; balance $63.00\n"
+    respx.post(f"{A}/admin/users/sme@gmail.test/credits/9/end").respond(
+        409, json={"detail": "grant 9 is purchase: only a grant an admin or a code gave can be ended"})
+    assert cli.main(["admin", "end", "sme@gmail.test", "9"]) == cli.FAILED
+    assert capsys.readouterr().err.startswith("error: grant 9 is purchase")
+    for bad in (["admin", "credit", "nobody", "5"], ["admin", "end", "org:acme", "x"], ["admin", "credit", "a@b", "nan"]):
+        with pytest.raises(SystemExit):
+            cli.main(bad)
+
+
+@respx.mock
+def test_admin_limits_and_models_read_set_and_clear(capsys):
+    config.save({"token": "tok"})
+    respx.get(f"{A}/admin/limits", params={"subject": "org:acme"}).respond(json={"subject": "org:acme", "limits": []})
+    assert cli.main(["admin", "limits", "org:acme"]) == 0
+    assert capsys.readouterr().out == "org:acme: no limit\n"
+    put = respx.put(f"{A}/admin/limits").respond(
+        json={"subject": "bob@acme.test", "limits": [{"product": "*", "usd": 200.0}]})
+    assert cli.main(["admin", "limits", "Bob@acme.test", "--usd", "200"]) == 0
+    assert capsys.readouterr().out == "bob@acme.test *: $200.00 a month\n"
+    assert cli.main(["admin", "limits", "bob@acme.test", "--clear", "--product", "kennet"]) == 0
+    assert [json.loads(c.request.content) for c in put.calls] == [
+        {"subject": "bob@acme.test", "product": "*", "usd": 200.0},
+        {"subject": "bob@acme.test", "product": "kennet", "usd": None}]
+    capsys.readouterr()
+    respx.get(f"{A}/admin/models", params={"subject": "org:acme"}).respond(json={"subject": "org:acme", "models": []})
+    assert cli.main(["admin", "models", "org:acme"]) == 0
+    assert capsys.readouterr().out == "org:acme: any model its products offer\n"
+    put = respx.put(f"{A}/admin/models").respond(json={"subject": "org:acme", "models": [
+        {"product": "hum", "models": ["anthropic/*", "openai/gpt-5"]}]})
+    assert cli.main(["admin", "models", "org:acme", "anthropic/*", "openai/gpt-5"]) == 0
+    assert capsys.readouterr().out == "org:acme hum: anthropic/*, openai/gpt-5\n"
+    assert cli.main(["admin", "models", "org:acme", "--none"]) == 0
+    assert cli.main(["admin", "models", "org:acme", "--clear"]) == 0
+    assert [json.loads(c.request.content)["models"] for c in put.calls] == [["anthropic/*", "openai/gpt-5"], [], None]
+    with pytest.raises(SystemExit):
+        cli.main(["admin", "limits", "org:acme", "--usd", "5", "--clear"])
+
+
+@respx.mock
+def test_admin_audit_and_a_person_without_the_role_is_told_accounts_sentence(capsys):
+    config.save({"token": "tok"})
+    audit = respx.get(f"{A}/admin/audit").respond(json=[{"at": 1_900_000_000, "actor": "ac@metaphi.ai",
+                                                         "method": "POST", "path": "/admin/orgs/acme/credits",
+                                                         "query": None, "body": {"usd": 5}, "status": 200}])
+    assert cli.main(["admin", "audit", "--actor", "AC@metaphi.ai", "--days", "7"]) == 0
+    assert capsys.readouterr().out.splitlines()[1].split()[-4:] == ["ac@metaphi.ai", "200", "POST",
+                                                                    "/admin/orgs/acme/credits"]
+    assert dict(audit.calls[0].request.url.params) == {"actor": "ac@metaphi.ai", "days": "7", "limit": "200"}
+    respx.get(f"{A}/admin/orgs/acme/access").respond(403, json={"detail": "bob@acme.test does not hold an admin role"})
+    assert cli.main(["admin", "org", "acme", "--json"]) == cli.FAILED
+    assert json.loads(capsys.readouterr().out)["error"]["message"] == "bob@acme.test does not hold an admin role"
+    config.save({})
+    assert cli.main(["admin", "orgs"]) == cli.AUTH
+    assert "Next: kennet login" in capsys.readouterr().err
