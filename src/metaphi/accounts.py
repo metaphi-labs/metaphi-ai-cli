@@ -1,5 +1,5 @@
 """Your Metaphi AI account: sign in from the terminal (RFC 8628, as `stripe login` does) and be handed your
-organization's keys, the organizations you manage, and their prepaid credit."""
+organization's keys, the organizations you manage, and their credit."""
 from __future__ import annotations
 
 import contextlib
@@ -435,8 +435,14 @@ def revoke_key(org_id: str, key_id: str) -> dict[str, Any]:
 
 
 def org_credits() -> list[dict[str, Any]]:
-    """The prepaid balance of each organization the person may see it for (owners, admins, billing)."""
+    """The balance of each organization the person may see it for (owners, admins, billing)."""
     return call("GET", "/credits/orgs")
+
+
+def available(org: str) -> dict[str, Any]:
+    """What the person may spend now in the organization, whatever their role and its billing: `available_usd`
+    (None: no limit), what bounds it (`bound`: balance, limit, org_limit) and when a monthly limit resets."""
+    return call("GET", "/credits/me", params={"org": org})
 
 
 def credit_of(name: str | None) -> dict[str, Any]:

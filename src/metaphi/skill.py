@@ -71,7 +71,7 @@ their data goes.
 - An organization has one free test run in all (`--test`): a real twin through the same pipeline, of a file up
   to 2 MiB. Spend it on a representative file, and ask the user which one before you do. Once it is used the
   refusal is `test_runs_used` (exit 1; `next_step` is the same command without `--test`): runs from then on are
-  live. A live run draws the organization's prepaid credit:
+  live. A live run draws the organization's credit:
   ask the user before the first one, even after a good test run.
 - `kennet` says nothing about new releases under `--json`. What install.sh installed updates itself in the
   background, only to a release signed by Metaphi AI (`KENNET_DISABLE_AUTOUPDATE=1` stops it). `kennet update
@@ -115,8 +115,9 @@ It asks the servers, and asks the twin service whether each key works: `key.stat
   `kennet org join <org>`; otherwise the message says whether the key was replaced by a sign-in elsewhere or the
   user is in no organization, and `next_step` is `kennet login`, which says the rest.
 - Exit 0: go to step 3. `org` is the organization the keys belong to. `organizations` lists each organization the
-  user is in, with their `role` and what it holds (`grants`), and `credits_usd`, the prepaid balance, when they may
-  see it.
+  user is in, with their `role` and what it holds (`grants`), `available_usd`, what they may spend now (null: no
+  limit; `bound` says what limits it, `resets` when a monthly limit does), and `credits_usd`, the organization's
+  balance, when they may see it.
 
 ## 2. Sign in (needs the user, once)
 
@@ -168,7 +169,7 @@ create` pipes it straight into the store.
 
 ```sh
 kennet twin trace.json --test --json        # free; file at most 2 MiB; one test run in all per organization
-kennet twin trace.json --json               # live; draws prepaid credit
+kennet twin trace.json --json               # live; draws credit
 ```
 
 Result: `{{"output": "trace.twin.json", "id": "twin_..."}}`. The output is `<name>.twin<extension>` beside the input

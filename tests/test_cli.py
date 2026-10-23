@@ -133,11 +133,14 @@ def test_whoami_asks_the_server_and_says_the_org_the_balance_and_the_key(monkeyp
     checked = respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
     orgs = respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": ["twin"]}])
     respx.get(f"{A}/credits/orgs").respond(json=[{"id": "acme", "credits_usd": 12.5, "can_buy": True}])
+    respx.get(f"{A}/credits/me", params={"org": "acme"}).respond(
+        json={"org": "acme", "available_usd": 12.5, "bound": "balance", "resets": None})
     respx.get(f"{A}/keys/invitations").respond(json=[])
     assert cli.main(["whoami", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "email": "alice@example.test", "org": "acme",
-        "organizations": [{"id": "acme", "role": "owner", "grants": ["twin"], "credits_usd": 12.5, "can_buy": True}],
+        "organizations": [{"id": "acme", "role": "owner", "grants": ["twin"], "available_usd": 12.5,
+                           "bound": "balance", "resets": None, "credits_usd": 12.5, "can_buy": True}],
         "key": {"source": "saved", "hint": "…abcd", "status": "ok"},
         "test_key": {"source": "saved", "hint": "…wxyz", "status": "ok"}}
     # each key was asked of the twin service, as itself
@@ -146,11 +149,35 @@ def test_whoami_asks_the_server_and_says_the_org_the_balance_and_the_key(monkeyp
     monkeypatch.setenv("METAPHI_API_KEY", "mai_sk_env_9999")
     assert cli.main(["whoami"]) == 0
     out = capsys.readouterr().out
-    assert "org:    acme (owner) holds twin; $12.50 prepaid credit" in out
+    assert "org:    acme (owner) holds twin\nyou:    $12.50 left (org balance)\nbalance: $12.50\n" in out
+    assert "prepaid" not in out
     assert "key:    …9999 (METAPHI_API_KEY): works" in out and "mai_sk_" not in out
     orgs.respond(401, json={"detail": "no"})   # a sign-in the server has ended is not "signed in"
     assert cli.main(["whoami"]) == cli.AUTH
     assert capsys.readouterr().err.endswith("Next: kennet login\n")
+
+
+@respx.mock
+def test_whoami_tells_every_member_what_they_may_spend_and_only_readers_the_balance(capsys):
+    """One figure, whatever the role and the organization's billing: what is left under the tightest bound."""
+    config.save({"token": "tok", "email": "m@acme.test", "org": "acme", "api_key": "mai_sk_live_abcd"})
+    respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
+    respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "member", "grants": ["twin"]}])
+    respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/keys/invitations").respond(json=[])
+    me = respx.get(f"{A}/credits/me")
+    for said, line in (({"available_usd": 50.0, "bound": "limit", "resets": "2026-11-01"},
+                        "you:    $50.00 left (your monthly limit, resets Nov 1)"),
+                       ({"available_usd": 10.0, "bound": "org_limit", "resets": "2026-11-01"},
+                        "you:    $10.00 left (org monthly limit, resets Nov 1)"),
+                       ({"available_usd": 40.0, "bound": "balance", "resets": None}, "you:    $40.00 left (org balance)"),
+                       ({"available_usd": None, "bound": None, "resets": None}, "you:    no limit")):
+        me.respond(json={"org": "acme", **said})
+        assert cli.main(["whoami"]) == 0
+        out = capsys.readouterr().out
+        assert line in out.splitlines() and "balance:" not in out and "prepaid" not in out
+    me.respond(404, json={"detail": "Not Found"})   # an accounts that does not say it yet: no line, no failure
+    assert cli.main(["whoami"]) == 0 and "you:" not in capsys.readouterr().out
 
 
 @respx.mock
@@ -197,6 +224,7 @@ def test_a_person_in_no_organization_makes_theirs_and_is_told_it_waits_for_appro
     # until the approval whoami says the organization waits, and names the command that picks the keys up
     respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "role": "owner", "grants": [], "admission": "pending"}])
     respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/credits/me").respond(json={"available_usd": None, "bound": None, "resets": None})
     respx.get(f"{A}/keys/invitations").respond(json=[])
     assert cli.main(["whoami"]) == cli.AUTH
     got = capsys.readouterr()
@@ -498,7 +526,7 @@ def test_credits_shows_the_balance(capsys):
     config.save({"token": "tok"})
     respx.get(f"{A}/credits/orgs").respond(json=[ORG])
     assert cli.main(["credits"]) == 0
-    assert capsys.readouterr().out.strip() == "acme: $12.50 prepaid credit"
+    assert capsys.readouterr().out.strip() == "acme: balance $12.50"
     respx.get(f"{A}/credits/orgs").respond(json=[{**ORG, "credits_usd": -3.0, "can_buy": False}])
     assert cli.main(["credits", "--org", "acme"]) == 0
     assert "ask an owner or billing member" in capsys.readouterr().out
@@ -520,7 +548,7 @@ def test_credits_buy_opens_checkout_and_waits_until_paid(monkeypatch, capsys):
     assert json.loads(made.calls[0].request.content) == {"usd": 50.0}
     assert made.calls[0].request.headers["authorization"] == "Bearer tok"
     out = capsys.readouterr().out
-    assert "https://checkout.stripe.com/c/pay/cs_1" in out and "acme: $62.50 prepaid credit" in out
+    assert "https://checkout.stripe.com/c/pay/cs_1" in out and "acme: balance $62.50" in out
 
 
 @respx.mock
@@ -574,9 +602,9 @@ def test_out_of_credit_at_a_terminal_pays_and_carries_on(home, monkeypatch, caps
     assert json.loads(checkout.calls[0].request.content) == {"usd": 100.0}
     assert made.call_count == 2 and len({c.request.headers["idempotency-key"] for c in made.calls}) == 1
     out = capsys.readouterr()
-    assert out.out.splitlines()[:5] == ["acme is out of prepaid credit.", "Pay in the browser:",
+    assert out.out.splitlines()[:5] == ["acme is out of credit.", "Pay in the browser:",
                                         "  https://checkout.stripe.com/c/pay/cs_1",
-                                        "Paid. acme: $100.00 prepaid credit", "uploaded trace.json (17 bytes)"]
+                                        "Paid. acme: balance $100.00", "uploaded trace.json (17 bytes)"]
     assert "error" not in out.err and (home / "trace.twin.json").read_text() == '{"user": "Morgan"}'
 
 
@@ -1073,6 +1101,7 @@ def test_whoami_says_why_a_saved_key_is_refused_from_reads_alone(capsys):
     orgs = respx.get(f"{A}/keys/orgs").respond(json=[{"id": "acme", "name": "Acme", "role": "member",
                                                        "admission": "admitted", "grants": ["twin"]}])
     respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/credits/me").respond(json={"available_usd": None, "bound": None, "resets": None})
     invitations = respx.get(f"{A}/keys/invitations").respond(json=[])
     respx.get(f"{API}/twins").respond(401, json={"error": {"type": "auth_error", "code": "invalid_api_key",
                                                            "message": "that key is unknown, revoked or mistyped"}})
@@ -1183,6 +1212,7 @@ def test_members_commands_act_only_on_organizations_the_person_manages_and_whoam
     assert capsys.readouterr().err == ("error: only owners and admins of beta see or change its members; you're "
                                        "a member (code: not_manager)\n")
     respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/credits/me").respond(json={"available_usd": None, "bound": None, "resets": None})
     respx.get(f"{A}/keys/invitations").respond(json=[])
     respx.get(f"{API}/twins").respond(json={"object": "list", "data": []})
     assert cli.main(["whoami"]) == 0
@@ -1268,6 +1298,7 @@ def test_whoami_lists_the_invitations_accounts_has_now_never_the_saved_one(capsy
                  "no_api_key": "Gone has invited you", "invitation": stale})
     orgs = respx.get(f"{A}/keys/orgs").respond(json=[])
     respx.get(f"{A}/credits/orgs").respond(json=[])
+    respx.get(f"{A}/credits/me").respond(json={"available_usd": None, "bound": None, "resets": None})
     listed = respx.get(f"{A}/keys/invitations").respond(json=[
         {"id": "inv_1", "org": "acme", "name": "Acme", "role": "member", "expires": 1_900_000_000},
         {"id": "inv_2", "org": "beta", "name": "Beta", "role": "admin"}])

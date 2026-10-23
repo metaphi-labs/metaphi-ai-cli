@@ -295,7 +295,7 @@ version, shown as `newer` by `list`. You run the tasks with Harbor on your own m
 
 ## Your organization
 
-`kennet whoami` asks the servers who you are: each organization you are in, with your role and what it may do, the prepaid balance when you may see it, and which key calls run on (the saved one, or
+`kennet whoami` asks the servers who you are: each organization you are in, with your role and what it may do, what you may spend now (`you:`: what is left under your monthly limit or the organization's balance, or no limit), the balance when you may see it, and which key calls run on (the saved one, or
 `METAPHI_API_KEY`), by its last four characters. It asks the twin service whether each key works, and exits 0 only
 when the one in use does.
 If an organization has invited you, `kennet login` and `kennet whoami` say so (`invitation_pending`) and name the
@@ -348,7 +348,7 @@ Accounts keeps only its hash. Like a change to members, it needs a recent sign-i
 
 ## Credits
 
-Each completed trace draws your organization's prepaid credit; a run that fails costs nothing. When the balance
+Each completed trace draws your organization's credit; a run that fails costs nothing. When the balance
 reaches zero, new runs are refused until credit is added.
 
 ```sh
@@ -365,11 +365,11 @@ add credit there and then, opens Stripe Checkout, and carries on with the same r
 
 ```
 $ kennet twin trace.json
-acme is out of prepaid credit.
+acme is out of credit.
 Add credit now? Amount in $ [100]:
 Pay in the browser:
   https://checkout.stripe.com/c/pay/...
-Paid. acme: $100.00 prepaid credit
+Paid. acme: balance $100.00
 uploaded trace.json (48,112 bytes)
 ```
 
