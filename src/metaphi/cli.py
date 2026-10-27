@@ -789,6 +789,49 @@ def cmd_credits(a: argparse.Namespace) -> None:
                                                        "; ask an owner or billing member to add it.")] if out else []))
 
 
+def _spend_lines(got: dict) -> list[str]:
+    """A person's month: its total, each cap, then model calls by model, compute by supplier and device, and runs."""
+    lines = [f"{got.get('email') or 'you'}, {got['month']}: {_money(got.get('usd'))} spent"]
+    lines += [f"  cap {c['product']} ({c['subject']}): {_money(c['spent'])} of {_money(c['usd'])}"
+              + (f", {_money(c['authorized'])} held by running work" if c.get("authorized") else "")
+              for c in got.get("caps") or []]
+    for title, head, rows in (
+            ("Models", ("ROUTE", "MODEL", "CALLS", "SPENT"),
+             [(m["route"], str(m.get("model") or "-"), str(m["calls"]), _money(m["usd"]))
+              for m in got.get("models") or []]),
+            ("Compute", ("SUPPLIER/DEVICE", "SANDBOXES", "SPENT"),
+             [(c["route"].split("/", 1)[-1], str(c["sandboxes"]), _money(c["usd"])) for c in got.get("compute") or []]),
+            ("Runs", ("RUN", "SPENT"), [(r["job"], _money(r["usd"])) for r in got.get("runs") or []])):
+        if rows:
+            lines += ["", title, *_rows([head, *rows])]
+    if got.get("unattributed_usd"):
+        lines.append(f"Under no run: {_money(got['unattributed_usd'])}")
+    return lines
+
+
+def cmd_spend(a: argparse.Namespace) -> None:
+    got = accounts.my_spend(a.month, a.org)
+    _out(a, got, *_spend_lines(got))
+
+
+def cmd_admin_spend(a: argparse.Namespace) -> None:
+    got = admin.spend(a.email, a.month)
+    if a.email:
+        _out(a, got, *_spend_lines(got))
+        return
+    people = got.get("people") or []
+    rows = [("PERSON", "SPENT", "MODELS", "COMPUTE")] + [
+        (p["email"], _money(p["usd"]), _money(p.get("models_usd")), _money(p.get("compute_usd"))) for p in people]
+    _out(a, got, f"{got['month']}: {len(people)} people", *(_rows(rows) if people else ["no spend"]))
+
+
+def _month(said: str) -> str:
+    said = said.strip()
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", said):
+        raise argparse.ArgumentTypeError(f"{said!r} is not a month (YYYY-MM)")
+    return said
+
+
 def cmd_credits_buy(a: argparse.Namespace) -> None:
     o = accounts.credit_of(a.org)
     if not o.get("can_buy"):
@@ -1150,6 +1193,13 @@ def parser() -> argparse.ArgumentParser:
         verb.add_argument("--org", help="the organization, when you manage several")
         _json_flag(verb)
 
+    s = sub.add_parser("spend", help="what you spent this month against your caps: models by model, sandboxes by "
+                       "supplier and GPU, and each run")
+    s.add_argument("--month", type=_month, help="a UTC month, YYYY-MM (default: this one)")
+    s.add_argument("--org", help="your spend in this organization alone")
+    _json_flag(s)
+    s.set_defaults(fn=cmd_spend)
+
     s = sub.add_parser("credits", help="your organization's balance")
     s.add_argument("--org")
     _json_flag(s)
@@ -1168,6 +1218,11 @@ def parser() -> argparse.ArgumentParser:
     v = verbs.add_parser("orgs", help="every organization: admission, members, keys, credit, grants")
     _json_flag(v)
     v.set_defaults(fn=cmd_admin_orgs)
+    v = verbs.add_parser("spend", help="every person's spend this month, the most first; or one person's whole")
+    v.add_argument("--email", type=_email, help="one person's month, as `kennet spend` shows it to them")
+    v.add_argument("--month", type=_month, help="a UTC month, YYYY-MM (default: this one)")
+    _json_flag(v)
+    v.set_defaults(fn=cmd_admin_spend)
     v = verbs.add_parser("admissions", help="the organizations waiting to be approved, the longest wait first")
     _json_flag(v)
     v.set_defaults(fn=cmd_admin_admissions)

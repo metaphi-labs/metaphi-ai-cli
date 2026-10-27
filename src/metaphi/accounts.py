@@ -445,6 +445,12 @@ def available(org: str) -> dict[str, Any]:
     return call("GET", "/credits/me", params={"org": org})
 
 
+def my_spend(month: str | None = None, org: str | None = None) -> dict[str, Any]:
+    """What the person spent in a UTC month (this one by default), every product's: per product, model calls per
+    model, compute per supplier and device, each run's, and this month's caps with what is spent under each."""
+    return call("GET", "/credits/me/spend", params={k: v for k, v in (("month", month), ("org", org)) if v})
+
+
 def credit_of(name: str | None) -> dict[str, Any]:
     """The organization a credits command acts on: the one named, or the only one whose balance the person sees."""
     mine = org_credits()

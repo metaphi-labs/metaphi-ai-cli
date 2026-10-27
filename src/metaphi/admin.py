@@ -81,6 +81,11 @@ def transactions(org_id: str, limit: int, type: str | None = None) -> dict[str, 
     return call("GET", f"{_org(org_id)}/transactions", params={"limit": limit, **({"type": type} if type else {})})
 
 
+def spend(email: str | None, month: str | None) -> dict[str, Any]:
+    """One person's month as they read it, or with no `email` every person's in total."""
+    return call("GET", "/admin/spend", params={k: v for k, v in (("email", email), ("month", month)) if v})
+
+
 def grants(email: str) -> dict[str, Any]:
     """What a person holds on every resource, the grants set by hand, and their admin tier."""
     return call("GET", f"/admin/users/{_q(email.lower())}/grants")

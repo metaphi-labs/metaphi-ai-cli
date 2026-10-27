@@ -534,6 +534,44 @@ def test_credits_shows_the_balance(capsys):
     assert cli.main(["credits"]) == 1
 
 
+MONTH = {"email": "ann@acme.test", "month": "2026-10", "org": None, "usd": 3.75, "products": {"kennet": 3.75},
+         "models": [{"route": "glm", "model": "glm-5", "calls": 2, "usd": 2.5}],
+         "compute": [{"route": "kennet.sandbox/thunder/h100", "sandboxes": 1, "usd": 1.25}],
+         "runs": [{"job": "v:t/eval/r/", "usd": 3.0}], "unattributed_usd": 0.75,
+         "caps": [{"subject": "ann@acme.test", "product": "*", "usd": 100.0, "spent": 3.75, "authorized": 0.0}]}
+
+
+@respx.mock
+def test_spend_shows_your_month_by_model_by_device_and_by_run(capsys):
+    config.save({"token": "tok"})
+    got = respx.get(f"{A}/credits/me/spend").respond(json=MONTH)
+    assert cli.main(["spend"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "ann@acme.test, 2026-10: $3.75 spent"
+    assert out[1].strip() == "cap * (ann@acme.test): $3.75 of $100.00"
+    assert ["thunder/h100", "1", "$1.25"] in [line.split() for line in out]
+    assert ["v:t/eval/r/", "$3.00"] in [line.split() for line in out] and out[-1] == "Under no run: $0.75"
+    assert cli.main(["spend", "--month", "2026-09", "--org", "acme", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == MONTH
+    assert dict(got.calls[-1].request.url.params) == {"month": "2026-09", "org": "acme"}
+    with pytest.raises(SystemExit):
+        cli.main(["spend", "--month", "2026-13"])
+
+
+@respx.mock
+def test_admin_spend_lists_everyone_and_reads_one_person_whole(capsys):
+    config.save({"token": "tok"})
+    every = respx.get(f"{A}/admin/spend").respond(json={"month": "2026-10", "people": [
+        {"email": "ann@acme.test", "usd": 3.75, "models_usd": 2.5, "compute_usd": 1.25}]})
+    assert cli.main(["admin", "spend"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "2026-10: 1 people" and out[2].split() == ["ann@acme.test", "$3.75", "$2.50", "$1.25"]
+    every.respond(json=MONTH)
+    assert cli.main(["admin", "spend", "--email", "Ann@Acme.test"]) == 0
+    assert capsys.readouterr().out.startswith("ann@acme.test, 2026-10: $3.75 spent")
+    assert dict(every.calls[-1].request.url.params) == {"email": "ann@acme.test"}
+
+
 @respx.mock
 def test_credits_buy_opens_checkout_and_waits_until_paid(monkeypatch, capsys):
     config.save({"token": "tok"})
