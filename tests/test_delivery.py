@@ -143,6 +143,25 @@ def test_pull_fetches_what_differs_and_verify_checks_it_offline(home, capsys):
 
 
 @respx.mock
+def test_a_name_alone_pulls_the_newest_version_and_a_pinned_one_says_a_newer_is_out(home, capsys):
+    old, new = served(home, "set@0.1.0", TASKS), served(home, "set@0.1.1", TASKS)
+    old["view"]["newer"] = "set@0.1.1"
+    respx.get(f"{API}/deliveries/set@0.1.0").respond(json=old["view"])
+    summary = lambda made: {k: v for k, v in made["view"].items() if k != "tasks"}
+    respx.get(f"{API}/deliveries").respond(json={"object": "list", "data": [summary(new), summary(old)],
+                                                 "has_more": False, "url": ""})
+    code, got, _ = run(capsys, "pull", "set")
+    assert code == 0 and got["id"] == "set@0.1.1" and got["dir"] == "set-0.1.1" and got["newer"] is None
+    assert json.loads((home / "set-0.1.1" / "delivery.lock.json").read_text()) == new["lock"]
+    code, got, _ = run(capsys, "delivery", "pull", "set@0.1.0")
+    assert code == 0 and got["id"] == "set@0.1.0" and got["newer"] == "set@0.1.1"
+    assert cli.main(["pull", "set@0.1.0"]) == 0
+    assert "Newer: set@0.1.1 is out  (kennet delivery diff set@0.1.0 set@0.1.1)" in capsys.readouterr().out
+    code, got, _ = run(capsys, "pull", "other")
+    assert code != 0 and not (home / "other").exists()
+
+
+@respx.mock
 def test_a_download_that_is_not_the_locked_tree_is_never_put_in_place(home, capsys):
     served(home, "set@0.1.0", TASKS)
     raw = io.BytesIO()

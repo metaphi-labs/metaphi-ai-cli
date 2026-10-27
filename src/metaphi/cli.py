@@ -402,14 +402,16 @@ def cmd_delivery_show(a: argparse.Namespace) -> None:
 def cmd_delivery_pull(a: argparse.Namespace) -> None:
     from metaphi import delivery
     got = delivery.pull(a.id, Path(a.to) if a.to else None, dry_run=a.dry_run, say=_progress(a))
-    got["next_step"] = (f"kennet delivery pull {a.id} --to {got['dir']}" if a.dry_run
+    got["next_step"] = (f"kennet delivery pull {got['id']} --to {got['dir']}" if a.dry_run
                         else f"kennet delivery verify {got['dir']}")
     n = len(got["fetched"])
-    said = (f"{a.id} would fetch {n} of {got['tasks']} tasks into {got['dir']}; {got['unchanged']} are there already"
+    said = (f"{got['id']} would fetch {n} of {got['tasks']} tasks into {got['dir']}; {got['unchanged']} are there already"
             if a.dry_run else
-            f"{a.id} is at {got['dir']}: {got['tasks']} tasks ({n} fetched, {got['unchanged']} already there), "
+            f"{got['id']} is at {got['dir']}: {got['tasks']} tasks ({n} fetched, {got['unchanged']} already there), "
             f"{_size(got['bytes'])} downloaded")
-    _out(a, got, said, *([] if a.dry_run else [f"Lock: {got['lock']}"]), f"Next: {got['next_step']}")
+    _out(a, got, said, *([] if a.dry_run else [f"Lock: {got['lock']}"]),
+         *([f"Newer: {got['newer']} is out  (kennet delivery diff {got['id']} {got['newer']})"] if got["newer"] else []),
+         f"Next: {got['next_step']}")
 
 
 def cmd_delivery_verify(a: argparse.Namespace) -> int:
@@ -1363,7 +1365,7 @@ def parser() -> argparse.ArgumentParser:
     v.set_defaults(fn=cmd_delivery_show)
 
     def _pull(v: argparse.ArgumentParser) -> None:
-        v.add_argument("id", metavar="<name@version>")
+        v.add_argument("id", metavar="<name>[@<version>]", help="a name alone is its newest version")
         v.add_argument("--to", metavar="DIR", help="where it goes (default: ./<name>-<version>)")
         v.add_argument("--dry-run", action="store_true", help="say what would be fetched, and fetch nothing")
         _json_flag(v)

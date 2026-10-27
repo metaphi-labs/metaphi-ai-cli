@@ -39,6 +39,7 @@ from metaphi.twin import UPLOAD, _client, _error, _key, _retry_after, _send, _Tr
 LOCK, SUMS, TASKS = "delivery.lock.json", "SHA256SUMS", "tasks"
 AT_ONCE = 8             # tasks fetched at a time
 ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}@[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
+NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 TREE = re.compile(r"sha256:[0-9a-f]{64}")
 KINDS = (1, 2)          # the lock formats this reads: what a task's tree hash is taken over
@@ -70,6 +71,14 @@ def _get(path: str, sleep: Callable[[float], None] = time.sleep) -> httpx.Respon
 def held(sleep: Callable[[float], None] = time.sleep) -> list[dict[str, Any]]:
     """The deliveries the organization holds, newest sent first."""
     return _get("/deliveries", sleep).json()["data"]
+
+
+def latest(name: str, sleep: Callable[[float], None] = time.sleep) -> str:
+    """The newest version of a set the organization holds, as `<name>@<version>`."""
+    for d in held(sleep):
+        if d["name"] == name and not d.get("newer"):
+            return d["id"]
+    raise _need(f"your organization holds no delivery named {name!r}", "resource_missing", "kennet delivery list")
 
 
 def show(delivery: str, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
@@ -282,10 +291,14 @@ def default_dir(delivery: str) -> Path:
 
 def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Callable[[str], None] = print,
          sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
-    """Make `to` the delivery: the lock, the sums, and every task whose tree is not already there."""
-    if not ID.fullmatch(delivery):
-        raise _need(f"{delivery!r} is not a delivery: one is <name>@<version>, as `kennet delivery list` says them",
-                    "invalid_delivery", "kennet delivery list")
+    """Make `to` the delivery: the lock, the sums, and every task whose tree is not already there. A name alone
+    is its newest version; a version named is that version, and the result says `newer` when one is out."""
+    pinned = ID.fullmatch(delivery)
+    if not pinned and not NAME.fullmatch(delivery):
+        raise _need(f"{delivery!r} is not a delivery: one is <name> or <name>@<version>, as `kennet delivery list` "
+                    "says them", "invalid_delivery", "kennet delivery list")
+    if not pinned:
+        delivery = latest(delivery, sleep)
     to = to or default_dir(delivery)
     with _client(_key(None, False)) as h:
         try:
@@ -297,6 +310,10 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
         if lock is None or lock["delivery"] != delivery:
             raise errors.APIError(f"the lock the service sent for {delivery} is not one this reads; nothing was "
                                   "written", code="lock_invalid")
+        try:
+            newer = _send(h, "GET", f"/deliveries/{delivery}", sleep).json().get("newer") if pinned else None
+        except errors.MetaphiError as e:
+            raise _named(e) from None
         there = to / LOCK
         if there.is_file() and there.read_bytes() != lock_raw:
             other = (_read_lock(there.read_bytes()) or {}).get("delivery") or "another lock"
@@ -307,7 +324,8 @@ def pull(delivery: str, to: Path | None = None, dry_run: bool = False, say: Call
             raise _need(f"{home} is a link; a delivery's tasks are a directory of its own", "directory_in_use",
                         f"kennet delivery pull {delivery} --to {default_dir(delivery)}")
         want = [t for t in lock["tasks"] if not _holds(home / t["name"], t["tree"], kind)]
-        result: dict[str, Any] = {"id": delivery, "dir": str(to), "lock": str(there), "dry_run": dry_run,
+        result: dict[str, Any] = {"id": delivery, "newer": newer, "dir": str(to), "lock": str(there),
+                                  "dry_run": dry_run,
                                   "tasks": len(lock["tasks"]), "unchanged": len(lock["tasks"]) - len(want),
                                   "fetched": [t["name"] for t in want], "bytes": 0}
         if dry_run:
