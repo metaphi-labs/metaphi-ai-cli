@@ -406,7 +406,9 @@ user asks for it, never on your own: it changes their agents' configuration.
 
 The loop: write a Harbor bundle, check it (`run_task_ci_checks`), run models on it (`run_harbor_tasks`), read
 the rollouts (`harbor_runs`, `harbor_run_report`, `harbor_rollouts`), fix, repeat. Long calls return a task:
-poll `get_task`.
+poll `get_task`. While a run runs, `tail_run` (or `kennet tail <owner/name> <run-id> --json`, an event a line)
+says what each trial is doing: its phases, the steps setting its sandbox up, and what its commands write. A
+person watching a run wants `kennet tail <owner/name> <run-id>` in their own terminal: suggest it.
 
 - A bundle is named by `repo` (owner/name), `ref` and the path to its `task.toml` directory. Kennet reads
   GitHub, never the local checkout: commit and push the ref first. The call needs push on the repository.
