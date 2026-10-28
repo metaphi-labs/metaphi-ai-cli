@@ -6,6 +6,7 @@
     kennet org members                  its members; `add`, `role`, `remove` change them (owners and admins)
     kennet keys create ci | ...         a service key for CI, piped into its secret; `list`, `revoke`
     kennet twin trace.json              twin a trace with that key
+    kennet tail acme/tasks <run-id>     follow a run live: each trial's timeline and what its sandboxes write
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
 the result (or the error object) alone on stdout while progress goes to stderr, and an error that one command
@@ -1004,6 +1005,44 @@ def cmd_admin_audit(a: argparse.Namespace) -> None:
     _out(a, {"data": got}, *(_rows(rows) if got else ["no changes in that window"]))
 
 
+def cmd_tail(a: argparse.Namespace) -> int:
+    """Follow a run: redrawn in place on a terminal, a line per event in a pipe or with --plain, an event per
+    line of JSON with --json. It ends once every trial it saw has ended and the run is quiet; ^C ends it sooner."""
+    import shutil
+
+    from metaphi import runs
+    board, since, heard = runs.Board(a.run_id), a.since, time.monotonic()
+    live = sys.stdout.isatty() and not a.plain and not a.json
+    colour = live and not os.environ.get("NO_COLOR")
+    drawn = 0
+    if live:
+        print("\x1b[?25l", end="", flush=True)   # the cursor hidden while the screen is redrawn
+    try:
+        while True:
+            # a terminal reads often enough for its clocks to tick; a pipe waits as long as the API does
+            got = runs.read(a.repo, a.run_id, since, a.trial, 2 if live else runs.WAIT_S, a.test)
+            since = got["next_since"]
+            for e in got["data"]:
+                board.add(e)
+                if a.json:
+                    print(json.dumps(e), flush=True)
+                elif not live and (line := runs.plain(e)) is not None:
+                    print(line, flush=True)
+            if got["data"]:
+                heard = time.monotonic()
+            if live:
+                size = shutil.get_terminal_size()
+                lines = runs.draw(board, time.time(), size.columns - 1, colour)[:max(1, size.lines - 1)]
+                print((f"\x1b[{drawn}F\x1b[J" if drawn else "") + "\n".join(lines), flush=True)
+                drawn = len(lines)
+            if board.done and time.monotonic() - heard >= runs.WAIT_S:   # every trial ended, and the run is quiet
+                break
+    finally:
+        if live:
+            print("\x1b[?25h", end="", flush=True)
+    return 0
+
+
 def cmd_update(a: argparse.Namespace) -> None:
     got = update.now()
     if got["updated"]:
@@ -1400,6 +1439,17 @@ def parser() -> argparse.ArgumentParser:
     v.set_defaults(fn=cmd_registry_token)
     _pull(sub.add_parser("pull", help="the same as `delivery pull`"))
     _verify(sub.add_parser("verify", help="the same as `delivery verify`"))
+
+    s = sub.add_parser("tail", help="follow a run live: each trial's timeline, the step it is on, and the last lines "
+                                    "its sandboxes wrote")
+    s.add_argument("repo", metavar="<owner/name>", help="the repository the run was launched over")
+    s.add_argument("run_id", metavar="<run-id>", help="the run, as its launch named it")
+    s.add_argument("--trial", default="", metavar="<name>", help="one trial alone, by its Harbor name")
+    s.add_argument("--since", type=int, default=0, metavar="<n>", help="start at this event (default: the first)")
+    s.add_argument("--plain", action="store_true", help="a line per event, as in a pipe, never redrawn")
+    s.add_argument("--test", action="store_true", help="read with the saved test key")
+    _json_flag(s)
+    s.set_defaults(fn=cmd_tail)
 
     s = sub.add_parser("agents", help="Kennet in your coding agents: the skill and Kennet's MCP server, in each "
                        "harness here (" + ", ".join(agents.NAMES) + ")")

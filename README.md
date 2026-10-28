@@ -293,6 +293,32 @@ A pulled delivery is `delivery.lock.json`, `SHA256SUMS` and `tasks/<task>/`. The
 and its images by digest; `verify` needs that directory and nothing else. A version never changes: a fix is a new
 version, shown as `newer` by `list`. You run the tasks with Harbor on your own machines.
 
+## Follow a run
+
+```sh
+kennet tail acme/tasks 20261028T072322Z-db0eea              # each trial's timeline, redrawn as it runs
+kennet tail acme/tasks 20261028T072322Z-db0eea --trial <name>   # one trial alone
+kennet tail acme/tasks 20261028T072322Z-db0eea --plain      # a line per event, for a log; --json: an event a line
+```
+
+```
+20261028T072322Z-db0eea  18:03  3 trials · 1 ended · 2 running
+
+  carla-route-driver__wZRsaKP  ░░░░░░░░░░░░░░░░░░░░░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  grading 11:49
+                               image cached 0:04 · sandbox 6:06
+  carla-route-driver__dvBSvmr  ░░░░░░░░░░░░░░░░░░░░░█▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓      ✓ reward 0.00
+                               image cached 0:04 · sandbox 5:58
+
+  ░ setting up   █ agent   ▓ grading
+
+  wZRsaKP │ route 7/10 HazardAtSideLane  score 77.0  420 s
+```
+
+A row is a trial on the run's clock: setting its sandbox up (the image read from cache or built, the sandbox
+made and its image loaded), the agent, then grading. Under the rows, the last lines its sandboxes wrote. It ends
+once every trial has ended and the run is quiet; ^C ends it sooner. A run is your organization's to follow:
+anyone else's reads as not there.
+
 ## Your organization
 
 `kennet whoami` asks the servers who you are: each organization you are in, with your role and what it may do, what you may spend now (`you:`: what is left under your monthly limit or the organization's balance, or no limit), the balance when you may see it, and which key calls run on (the saved one, or
