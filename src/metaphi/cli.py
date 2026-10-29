@@ -7,6 +7,7 @@
     kennet keys create ci | ...         a service key for CI, piped into its secret; `list`, `revoke`
     kennet twin trace.json              twin a trace with that key
     kennet tail acme/tasks <run-id>     follow a run live: each trial's timeline and what its sandboxes write
+    kennet tail acme/tasks <id> <id>    runs side by side: a tower per run, a slab per stage, and each stage's time
 
 Made to be driven by an agent as much as typed: nothing waits on a question away from a terminal, `--json` puts
 the result (or the error object) alone on stdout while progress goes to stderr, and an error that one command
@@ -1005,13 +1006,56 @@ def cmd_admin_audit(a: argparse.Namespace) -> None:
     _out(a, {"data": got}, *(_rows(rows) if got else ["no changes in that window"]))
 
 
-def cmd_tail(a: argparse.Namespace) -> int:
-    """Follow a run: redrawn in place on a terminal, a line per event in a pipe or with --plain, an event per
-    line of JSON with --json. It ends once every trial it saw has ended and the run is quiet; ^C ends it sooner."""
+def _played(a: argparse.Namespace) -> int:
+    """Runs played back from their events, each from its own start, `--speed` times as fast as they happened:
+    side by side for two or more, the one run's timeline for one."""
     import shutil
 
     from metaphi import runs
-    board, since, heard = runs.Board(a.run_id), a.since, time.monotonic()
+    boards, plays = [], []
+    for run_id in a.run_id:
+        events, since = [], 0
+        while True:
+            got = runs.read(a.repo, run_id, since, a.trial, 0, a.test)
+            events += got["data"]
+            since = got["next_since"]
+            if not got.get("has_more"):
+                break
+        boards.append(runs.Board(run_id))
+        plays.append(runs.replay(events, a.speed))
+    colour, drawn, began = not os.environ.get("NO_COLOR"), 0, time.monotonic()
+    print("\x1b[?25l", end="", flush=True)
+    try:
+        while True:
+            elapsed = time.monotonic() - began
+            nows = []
+            for board, play in zip(boards, plays):
+                due, at = play(elapsed)
+                for e in due:
+                    board.add(e)
+                nows.append(at)
+            lines = runs.screen(boards, nows, shutil.get_terminal_size(), colour)
+            print((f"\x1b[{drawn}F\x1b[J" if drawn else "") + "\n".join(lines), flush=True)
+            drawn = len(lines)
+            if all(b.done for b in boards):
+                break
+            time.sleep(0.1)
+    finally:
+        print("\x1b[?25h", end="", flush=True)
+    return 0
+
+
+def cmd_tail(a: argparse.Namespace) -> int:
+    """Follow a run, or several side by side: redrawn in place on a terminal, a line per event in a pipe or with
+    --plain, an event per line of JSON with --json. It ends once every trial it saw has ended and the runs are
+    quiet; ^C ends it sooner. With --speed, ended runs play back from their events instead."""
+    import shutil
+
+    from metaphi import runs
+    if a.speed:
+        return _played(a)
+    boards = [runs.Board(r) for r in a.run_id]
+    sinces, heard = [a.since] * len(boards), time.monotonic()
     live = sys.stdout.isatty() and not a.plain and not a.json
     colour = live and not os.environ.get("NO_COLOR")
     drawn = 0
@@ -1019,23 +1063,29 @@ def cmd_tail(a: argparse.Namespace) -> int:
         print("\x1b[?25l", end="", flush=True)   # the cursor hidden while the screen is redrawn
     try:
         while True:
-            # a terminal reads often enough for its clocks to tick; a pipe waits as long as the API does
-            got = runs.read(a.repo, a.run_id, since, a.trial, 2 if live else runs.WAIT_S, a.test)
-            since = got["next_since"]
-            for e in got["data"]:
-                board.add(e)
-                if a.json:
-                    print(json.dumps(e), flush=True)
-                elif not live and (line := runs.plain(e)) is not None:
-                    print(line, flush=True)
-            if got["data"]:
-                heard = time.monotonic()
+            # one run: a terminal reads often enough for its clocks to tick, a pipe waits as long as the API does;
+            # several are read in turn without waiting, so none holds up the others, and rest when none had news
+            wait, news = (2 if live else runs.WAIT_S) if len(boards) == 1 else 0, False
+            for i, board in enumerate(boards):
+                got = runs.read(a.repo, board.run_id, sinces[i], a.trial, wait, a.test)
+                sinces[i] = got["next_since"]
+                for e in got["data"]:
+                    board.add(e)
+                    if a.json:
+                        print(json.dumps(e), flush=True)
+                    elif not live and (line := runs.plain(e)) is not None:
+                        print(line if len(boards) == 1 else f"{board.run_id} {line}", flush=True)
+                if got["data"]:
+                    heard, news = time.monotonic(), True
+            if len(boards) > 1 and not news:
+                time.sleep(1)
             if live:
                 size = shutil.get_terminal_size()
-                lines = runs.draw(board, time.time(), size.columns - 1, colour)[:max(1, size.lines - 1)]
+                lines = runs.screen(boards, time.time(), size, colour)
                 print((f"\x1b[{drawn}F\x1b[J" if drawn else "") + "\n".join(lines), flush=True)
                 drawn = len(lines)
-            if board.done and time.monotonic() - heard >= runs.WAIT_S:   # every trial ended, and the run is quiet
+            # every trial ended, and the runs are quiet
+            if all(b.done for b in boards) and time.monotonic() - heard >= runs.WAIT_S:
                 break
     finally:
         if live:
@@ -1441,9 +1491,12 @@ def parser() -> argparse.ArgumentParser:
     _verify(sub.add_parser("verify", help="the same as `delivery verify`"))
 
     s = sub.add_parser("tail", help="follow a run live: each trial's timeline, the step it is on, and the last lines "
-                                    "its sandboxes wrote")
-    s.add_argument("repo", metavar="<owner/name>", help="the repository the run was launched over")
-    s.add_argument("run_id", metavar="<run-id>", help="the run, as its launch named it")
+                                    "its sandboxes wrote; two or more runs side by side, a row per stage")
+    s.add_argument("repo", metavar="<owner/name>", help="the repository the runs were launched over")
+    s.add_argument("run_id", nargs="+", metavar="<run-id>", help="the run, as its launch named it; more than one "
+                   "sets them side by side: the sandbox, image, placement, agent, grading, use and cost of each")
+    s.add_argument("--speed", type=float, default=0, metavar="<x>",
+                   help="play ended runs back from their events, this many times as fast, each from its own start")
     s.add_argument("--trial", default="", metavar="<name>", help="one trial alone, by its Harbor name")
     s.add_argument("--since", type=int, default=0, metavar="<n>", help="start at this event (default: the first)")
     s.add_argument("--plain", action="store_true", help="a line per event, as in a pipe, never redrawn")

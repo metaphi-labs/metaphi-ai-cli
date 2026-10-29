@@ -131,3 +131,107 @@ def test_a_run_the_organization_does_not_own_is_said_plainly(capsys):
         "type": "invalid_request_error", "code": "resource_missing", "message": f"no run {RUN} here"}})
     assert cli.main(["tail", "acme/tasks", RUN]) == cli.FAILED
     assert f"acme/tasks holds no run {RUN} of your organization's" in capsys.readouterr().err
+
+
+MODAL, THUNDER = "20261029T200817Z-f02a9c", "20261029T200846Z-cfd296"
+
+
+def two_providers() -> tuple[list[dict], list[dict]]:
+    """The same task on Modal and on Thunder: Modal named its image and graded, Thunder's verifier was refused."""
+    def one(provider: str, gpu: str, image: tuple[str, float], placing: float, verifier: dict) -> list[dict]:
+        spec = {"provider": provider, "gpu": {"type": gpu, "count": 1}, "cpus": 8, "memory_gb": 32.0}
+        return [event(0, A, "phase", "start"), event(0, A, "phase", "environment-start"),
+                event(0, A, "stage", "image", {"state": "start", "s": 0}, sandbox="env"),
+                event(image[1], A, "stage", "image", {"state": "done", "s": image[1], "how": image[0]}, sandbox="env"),
+                event(image[1], A, "spec", "", spec, sandbox="env"),
+                event(image[1], A, "stage", "sandbox", {"state": "start", "s": 0}, sandbox="env"),
+                event(image[1] + placing, A, "stage", "sandbox", {"state": "done", "s": placing}, sandbox="env"),
+                event(10, A, "stage", "ready", {"state": "done", "s": 2}, sandbox="env"),
+                event(20, A, "usage", "", {"cpus": 8, "cpu_cores": 5.5, "mem_bytes": 4 << 30,
+                                          "gpu": {"util_pct": 40, "mem_used_mb": 2048}}, sandbox="env"),
+                event(20, A, "phase", "agent-start"), event(320, A, "phase", "agent-end"),
+                event(330, A, "phase", "verification-start"),
+                event(331, A, "stage", "sandbox", verifier, sandbox="verifier"),
+                event(400, A, "phase", "end", {"exception": "AgentTimeoutError", "failed_in": {"phase": "agent"},
+                                               "rewards": {"reward": 0.0}, "model_usd": 0.3, "total_usd": 0.7,
+                                               "sandbox_usd": {"env": 0.39, "verifier": 0.01}})]
+    return (one("modal", "A100-80GB", ("named", 0.0), 0.9, {"state": "done", "s": 1.0}),
+            one("thunder", "A100XL", ("cached", 1.9), 3.4, {"state": "failed", "s": 1.2, "error": "SpecNotCarriedError"}))
+
+
+def test_runs_side_by_side_have_a_row_per_stage_and_a_column_per_run():
+    modal, thunder = two_providers()
+    b1, b2 = runs.Board(MODAL), runs.Board(THUNDER)
+    for e in modal:
+        b1.add(e)
+    for e in thunder:
+        b2.add(e)
+    rows = {line.split()[0]: line for line in runs.compare([b1, b2], T0 + 500, 120, colour=False)[3:] if line.strip()}
+    assert "modal · A100-80GB" in rows["sandbox"] and "thunder · A100XL" in rows["sandbox"]
+    assert "named 0:00" in rows["image"] and "cached 0:01" in rows["image"]
+    assert rows["agent"].count("5:00") == 2 and "5.5/8" in rows["cpu"] and "40% · 2.0 GB" in rows["gpu"]
+    assert "$0.70 (model $0.30 · sandbox $0.40)" in rows["cost"]
+
+
+def test_towers_stand_on_one_ground_a_slab_per_stage_in_the_providers_hue():
+    modal, thunder = two_providers()
+    b1, b2 = runs.Board(MODAL), runs.Board(THUNDER)
+    for e in modal:
+        b1.add(e)
+    for e in thunder:
+        b2.add(e)
+    plain = runs.towers([b1, b2], T0 + 500, 40, colour=False)
+    assert plain[0].startswith("modal · A100-80GB") and "thunder · A100XL" in plain[0]
+    said = "\n".join(plain)
+    for stage in ("image 0:00", "image 0:01", "placing 0:03", "ready 0:02", "agent 5:00 ⏱", "grading 1:10 ✗"):
+        assert stage in said, stage
+    assert "grading 1:10\n" in said + "\n" or "grading 1:10 " in said     # Modal graded: no mark
+    assert plain[-1].startswith("6:40")
+    painted = "\n".join(runs.towers([b1, b2], T0 + 500, 40, colour=True))
+    assert "48;2;127;238;100" in painted and "48;2;84;160;255" in painted          # Modal green, Thunder blue
+
+
+def test_a_provider_with_no_hue_of_its_own_is_given_one_and_keeps_it():
+    assert runs.hue("modal") == (127, 238, 100) and runs.hue("thunder") == (84, 160, 255)
+    assert runs.hue("docker") == runs.hue("docker") and runs.hue("docker") in runs.OTHER_HUES
+
+
+def test_a_stage_under_way_grows_its_slab_as_the_clock_runs():
+    modal, _ = two_providers()
+    b = board(modal[:10])
+    early = runs.slabs(b.trials[A], T0 + 60)
+    late = runs.slabs(b.trials[A], T0 + 200)
+    assert early[-1][0] == "agent" and early[-1][2] == "live" and late[-1][1] > early[-1][1]
+
+
+def test_replay_plays_each_event_once_at_speed():
+    modal, _ = two_providers()
+    due = runs.replay(modal, speed=100)
+    first, at = due(0.5)                 # 50 s of the run
+    assert at == T0 + 50 and all(runs._at(e["at"]) <= T0 + 50 for e in first)
+    rest, _ = due(10)
+    assert len(first) + len(rest) == len(modal) and not set(map(id, first)) & set(map(id, rest))
+
+
+@respx.mock
+def test_tail_follows_runs_side_by_side_and_says_each_line_with_its_run(capsys, monkeypatch):
+    monkeypatch.setattr(runs, "WAIT_S", 0)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    modal, thunder = two_providers()
+    for run, events in ((MODAL, modal), (THUNDER, thunder)):
+        pages = [{"data": events, "has_more": False, "next_since": 99}, {"data": [], "has_more": False, "next_since": 99}]
+        respx.get(f"{API}/runs/{run}/events").mock(side_effect=[httpx.Response(200, json=p) for p in pages])
+    assert cli.main(["tail", "acme/tasks", MODAL, THUNDER, "--plain"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert any(line.startswith(f"{MODAL} ") for line in out) and any(line.startswith(f"{THUNDER} ") for line in out)
+
+
+@respx.mock
+def test_tail_speed_plays_ended_runs_back(capsys, monkeypatch):
+    modal, thunder = two_providers()
+    respx.get(f"{API}/runs/{MODAL}/events").respond(json={"data": modal, "has_more": False, "next_since": 99})
+    respx.get(f"{API}/runs/{THUNDER}/events").respond(json={"data": thunder, "has_more": False, "next_since": 99})
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    assert cli.main(["tail", "acme/tasks", MODAL, THUNDER, "--speed", "100000"]) == 0
+    out = capsys.readouterr().out
+    assert "thunder · A100XL" in out and "grading 1:10 ✗" in out

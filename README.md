@@ -319,6 +319,38 @@ made and its image loaded), the agent, then grading. Under the rows, the last li
 once every trial has ended and the run is quiet; ^C ends it sooner. A run is your organization's to follow:
 anyone else's reads as not there.
 
+### Runs side by side
+
+```sh
+kennet tail acme/tasks <run-id> <run-id>                # the same task on two providers, built as it runs
+kennet tail acme/tasks <run-id> <run-id> --speed 30     # ended runs played back, each from its own start
+```
+
+Two or more runs set side by side, their first trial each. Above, a tower per run standing on one ground: a slab
+per stage (image, placing, ready, agent, grading), as tall as its time on a scale every tower shares, the stage
+under way growing as the clock runs. A tower is its provider's colour, Modal green and Thunder blue, any other
+one of its own, and its stages are shades of it; red is a stage the infra failed, ⏱ an agent stopped at its time
+limit. Below, a row per stage and a column per run: the sandbox given, the image (named, cached or built) and
+each stage's time, the refusals a provider gave before it placed one, the agent's steps, what the sandbox used
+(CPU and GPU as they ran, peak memory) and what the trial cost.
+
+```
+           20261029T200817Z-f02a9c                          20261029T200846Z-cfd296
+
+sandbox    modal · A100-80GB                                thunder · A100XL
+           8 CPU · 32 GB                                    8 CPU · 32 GB
+image      named 0:00                                       cached 0:01
+placing    0:00                                             0:03
+ready      0:06                                             0:02
+agent      5:01 · 23 steps                                  5:06 · 18 steps
+grading    2:20                                             0:03 ✗
+cpu        ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 5.6/8
+memory     peak 4.3/32 GB
+gpu        ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ 0% · 0.0 GB
+cost       $0.70 (model $0.30 · sandbox $0.40)              $0.49 (model $0.23 · sandbox $0.27)
+total      7:43                                             5:44
+```
+
 ## Your organization
 
 `kennet whoami` asks the servers who you are: each organization you are in, with your role and what it may do, what you may spend now (`you:`: what is left under your monthly limit or the organization's balance, or no limit), the balance when you may see it, and which key calls run on (the saved one, or
